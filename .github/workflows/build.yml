@@ -32,17 +32,38 @@ jobs:
       - name: test
         run: dotnet test Sim.Tests/WarGame.Sim.Tests.csproj --no-restore --logger "console;verbosity=normal"
 
-  # Cross-platform binary builds. Requires `export_presets.cfg` to be present
-  # in the repo (committed after the user has run Godot's Project > Export
-  # dialog at least once and added Windows Desktop + macOS presets).
+  # Tiny prep job: tells the godot-export job whether export_presets.cfg has
+  # been committed yet. We cannot use hashFiles() in a job-level `if:` because
+  # that condition is evaluated by GitHub's controller before any runner is
+  # allocated — and hashFiles() requires a runner with the repo checked out.
+  check-presets:
+    name: check export presets
+    runs-on: ubuntu-latest
+    outputs:
+      has-presets: ${{ steps.check.outputs.has-presets }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: |
+          if [ -f export_presets.cfg ]; then
+            echo "has-presets=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::export_presets.cfg found; godot-export will run"
+          else
+            echo "has-presets=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::export_presets.cfg not found; godot-export will be skipped (commit one to enable Mac/Windows binary builds)"
+          fi
+
+  # Cross-platform binary builds. Activates once export_presets.cfg is in the
+  # repo (committed after running Godot's Project > Export dialog and adding
+  # Windows Desktop + macOS presets).
   #
   # firebelley/godot-export installs Godot 4.6.2 .NET, downloads the matching
   # export templates, and runs --export-release for each preset.
   godot-export:
     name: godot export
-    needs: determinism
+    needs: [determinism, check-presets]
+    if: needs.check-presets.outputs.has-presets == 'true'
     runs-on: ubuntu-latest
-    if: hashFiles('export_presets.cfg') != ''
     steps:
       - uses: actions/checkout@v4
 
