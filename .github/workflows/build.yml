@@ -1,0 +1,70 @@
+name: build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  # The determinism check is the single most important guarantee in the
+  # codebase: same seed + same commands -> byte-identical state on every
+  # platform we support. macOS-only passing proves nothing for lockstep
+  # netcode; the Windows runner is the real test.
+  determinism:
+    name: determinism (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: restore
+        run: dotnet restore Sim.Tests/WarGame.Sim.Tests.csproj
+
+      - name: test
+        run: dotnet test Sim.Tests/WarGame.Sim.Tests.csproj --no-restore --logger "console;verbosity=normal"
+
+  # Cross-platform binary builds. Requires `export_presets.cfg` to be present
+  # in the repo (committed after the user has run Godot's Project > Export
+  # dialog at least once and added Windows Desktop + macOS presets).
+  #
+  # firebelley/godot-export installs Godot 4.6.2 .NET, downloads the matching
+  # export templates, and runs --export-release for each preset.
+  godot-export:
+    name: godot export
+    needs: determinism
+    runs-on: ubuntu-latest
+    if: hashFiles('export_presets.cfg') != ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: build .NET
+        run: dotnet build WarGame.csproj -c ExportRelease
+
+      - name: export
+        uses: firebelley/godot-export@v6.0.0
+        with:
+          godot_executable_download_url: https://github.com/godotengine/godot/releases/download/4.6.2-stable/Godot_v4.6.2-stable_mono_linux_x86_64.zip
+          godot_export_templates_download_url: https://github.com/godotengine/godot/releases/download/4.6.2-stable/Godot_v4.6.2-stable_mono_export_templates.tpz
+          relative_project_path: ./
+          archive_output: true
+          use_godot_4: true
+
+      - name: upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wargame-builds
+          path: /home/runner/.local/share/godot/archives/*
+          if-no-files-found: warn
