@@ -24,7 +24,6 @@ public static class StateSerializer
         // Map.
         WriteI32(stream, s.Map.Width);
         WriteI32(stream, s.Map.Height);
-        // RawTiles is a contiguous byte span; written as-is.
         foreach (byte b in s.Map.RawTiles) stream.WriteByte(b);
 
         // Units (already in deterministic List order — Id == index).
@@ -37,6 +36,12 @@ public static class StateSerializer
             WriteI32(stream, u.TileX);
             WriteI32(stream, u.TileY);
             WriteI64(stream, u.Hp.Raw);
+            WriteI64(stream, u.ProgressRaw);
+
+            int pathLen = u.Path is null ? 0 : u.Path.Count;
+            WriteI32(stream, pathLen);
+            if (u.Path is not null)
+                foreach (int p in u.Path) WriteI32(stream, p);
         }
 
         // Cities.
@@ -50,6 +55,7 @@ public static class StateSerializer
             stream.WriteByte((byte)(c.IsCapital ? 1 : 0));
             WriteI32(stream, c.SupplyCapacity);
             WriteI64(stream, c.ProductionProgress.Raw);
+            stream.WriteByte(c.ProductionOrder);
         }
 
         // Players (fixed length array — but write the length anyway so the
@@ -61,12 +67,6 @@ public static class StateSerializer
             WriteI64(stream, p.Eco.Raw);
             stream.WriteByte(p.DoctrineId);
         }
-
-        // Phase 0 transient debug field. Deleted at Phase 1 step 4.
-        WriteI64(stream, s.DotPos.X.Raw);
-        WriteI64(stream, s.DotPos.Y.Raw);
-        WriteI64(stream, s.DotVel.X.Raw);
-        WriteI64(stream, s.DotVel.Y.Raw);
     }
 
     public static byte[] ToBytes(GameState s)

@@ -22,5 +22,25 @@ public struct City
     public PlayerId Owner;
     public bool IsCapital;
     public int SupplyCapacity;       // 5 by default; doctrine bonuses in Phase 3
-    public FP ProductionProgress;    // accumulator [0..EcoCost(typeBeingBuilt)] for current order
+    public FP ProductionProgress;    // ECO accumulated toward current order
+    public byte ProductionOrder;     // (UnitType + 1), 0 = idle. (+1 lets us
+                                     //  reserve 0 as the empty sentinel.)
+
+    public bool IsProducing => ProductionOrder != 0;
+
+    // Idle = no order queued. Set by ApplyBuildUnit.
+    public static City Create(int id, int x, int y, PlayerId owner, bool isCapital)
+    {
+        return new City
+        {
+            Id = id,
+            TileX = x,
+            TileY = y,
+            Owner = owner,
+            IsCapital = isCapital,
+            SupplyCapacity = UnitStats.CitySupplyCapacity,
+            ProductionProgress = FP.Zero,
+            ProductionOrder = 0,
+        };
+    }
 }

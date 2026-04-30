@@ -13,11 +13,12 @@ namespace WarGame.Sim.State;
 //
 // Schema versions:
 //   1 — Phase 0: rng + dot pos/vel only.
-//   2 — Phase 1 step 2: + map, units, cities, players. Dot retained as a
-//       transient debug feature; removed in Phase 1 step 4.
+//   2 — Phase 1 step 2: + map, units, cities, players (dot retained).
+//   3 — Phase 1 step 4: dot removed; movement state added on Unit.
+//   4 — Phase 1 step 5: + City.ProductionOrder.
 public struct GameState
 {
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 4;
 
     public int Version;
     public int Tick;
@@ -28,12 +29,6 @@ public struct GameState
     public List<City> Cities;    // index in list == City.Id; never reordered
     public Player[] Players;     // length 3: indices [None, Player1, Player2]
 
-    // Phase 0 leftover. Will be removed at Phase 1 step 4 once the renderer
-    // draws real units. Kept in the meantime so the existing scene remains
-    // visually verifiable while features land.
-    public FPVec2 DotPos;
-    public FPVec2 DotVel;
-
     public static GameState Initial(ulong seed)
     {
         return new GameState
@@ -41,9 +36,8 @@ public struct GameState
             Version = CurrentVersion,
             Tick = 0,
             Rng = new SimRng(seed),
-
-            // Step 2 ships an empty 1x1 map / no units / no cities by default.
-            // Step 3+ test maps and Phase 2's procgen produce real maps.
+            // Default empty map. Test maps and Phase 2 procgen produce real
+            // maps; tests that don't need terrain leave this 1x1 placeholder.
             Map = new MapState.Builder(1, 1).Build(),
             Units = new List<Unit>(),
             Cities = new List<City>(),
@@ -53,11 +47,6 @@ public struct GameState
                 new() { Id = PlayerId.Player1, Eco = FP.Zero, DoctrineId = 0 },
                 new() { Id = PlayerId.Player2, Eco = FP.Zero, DoctrineId = 0 },
             },
-
-            DotPos = FPVec2.Zero,
-            DotVel = new FPVec2(
-                FP.FromRaw(FP.OneRaw / 20),
-                FP.FromRaw(FP.OneRaw / 30)),
         };
     }
 }

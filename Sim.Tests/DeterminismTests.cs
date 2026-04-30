@@ -34,8 +34,8 @@ public class DeterminismTests
         // Cross-platform canary. CI on macOS and Windows must produce this
         // exact value. If either runner reports a different value, the sim
         // has a non-deterministic path — find it before merging.
-        // v2 schema (Phase 1 step 2: + map/units/cities/players).
-        const string Expected = "4363df82c052bfd51434d3da894e807553dd84891bf908ed63c1e26dc2388268";
+        // v4 schema (Phase 1 step 5: + City.ProductionOrder).
+        const string Expected = "cdcdc66fa90a961cd9666bef493744cb38c3d2a85768b4af4712afdf66de27af";
         Assert.True(
             hashA == Expected,
             $"determinism hash drifted. expected={Expected} actual={hashA}");
@@ -55,8 +55,8 @@ public class DeterminismTests
             a = GameSim.Step(a, null);
             b = GameSim.Step(b, null);
             Assert.Equal(a.Tick, b.Tick);
-            Assert.Equal(a.DotPos, b.DotPos);
             Assert.Equal(a.Rng.State, b.Rng.State);
+            Assert.Equal(a.Units.Count, b.Units.Count);
         }
     }
 

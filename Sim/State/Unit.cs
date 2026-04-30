@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using WarGame.Sim.Math;
 
 namespace WarGame.Sim.State;
@@ -11,8 +12,16 @@ namespace WarGame.Sim.State;
 //   3. Iteration order over a List<Unit> is deterministic; over a
 //      Dictionary<int, Unit> it is not.
 //
-// Step 4 (Movement) adds path/destination fields. Phase 0 step 2 keeps the
-// struct minimal — production-ready but not yet wired to movement.
+// Movement state:
+//   - TileX, TileY = the tile the unit is *anchored* in (where it sits when
+//     stationary, where its hitbox tests against, where supply lines see it).
+//   - Path = upcoming tile indices to traverse. Empty = stationary. The
+//     first entry is the unit's *next* tile.
+//   - ProgressRaw = FP raw value in [0, OneRaw) representing progress along
+//     the edge from the anchor tile to Path[0]. When it crosses OneRaw, the
+//     unit's anchor advances to Path[0], the entry is dequeued, and the
+//     overflow carries into the next edge (so step sizes > 1 tile per tick
+//     work correctly without dropping movement).
 public struct Unit
 {
     public int Id;
@@ -21,6 +30,27 @@ public struct Unit
     public int TileX;
     public int TileY;
     public FP Hp;
+    public List<int> Path;     // never null after Create; empty when idle
+    public long ProgressRaw;   // FP raw; reset to 0 when Path becomes empty
 
     public bool IsAlive => Hp > FP.Zero;
+    public bool IsMoving => Path is { Count: > 0 };
+
+    // Factory keeps Path allocation in one place; tests and command handlers
+    // both go through it so we never accidentally ship a unit with a null
+    // Path (which would NRE in the Movement system).
+    public static Unit Create(int id, PlayerId owner, UnitType type, int x, int y)
+    {
+        return new Unit
+        {
+            Id = id,
+            Owner = owner,
+            Type = type,
+            TileX = x,
+            TileY = y,
+            Hp = UnitStats.MaxHp(type),
+            Path = new List<int>(),
+            ProgressRaw = 0,
+        };
+    }
 }
