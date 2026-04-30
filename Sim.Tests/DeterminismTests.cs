@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using System.Security.Cryptography;
 using WarGame.Sim;
 using WarGame.Sim.State;
@@ -8,15 +7,14 @@ namespace WarGame.Sim.Tests;
 
 public class DeterminismTests
 {
-    // Golden-hash test. The whole point of the project's sim/render split is
-    // bit-identical sim across platforms. This test runs the same sim twice
-    // (in the same process) and confirms identical state. The Windows CI run
-    // of the same test confirms cross-OS determinism — which is the real
-    // proof needed for lockstep netcode.
+    // Golden-hash test. Same seed + same commands -> byte-identical state on
+    // every platform we support. This test runs the same sim twice in the
+    // same process and confirms identical state; the Windows CI matrix run
+    // proves *cross-OS* determinism, which is the actual lockstep guarantee.
     //
-    // If a future change causes this hash to drift, that is *intended* only if
-    // the change is to sim semantics. Update the constant below and call out
-    // the schema bump in the PR description; do not silently update.
+    // If a future change drifts this hash, that is *intended* only when the
+    // schema or sim semantics change. Update the constant below and bump
+    // GameState.CurrentVersion in the same commit; do not silently rebase.
     [Fact]
     public void TenThousandTicks_HashIsStable()
     {
@@ -25,22 +23,19 @@ public class DeterminismTests
 
         var s = GameState.Initial(Seed);
         s = GameSim.StepN(s, Ticks);
-
         string hashA = HashState(s);
 
         var s2 = GameState.Initial(Seed);
         s2 = GameSim.StepN(s2, Ticks);
-
         string hashB = HashState(s2);
 
         Assert.Equal(hashA, hashB);
 
-        // Pinning the actual hash is the cross-platform canary. CI on macOS
-        // and Windows both run this test; if either runner reports a
-        // different value, the sim has a non-deterministic path.
-        const string Expected = "abde61ef2334c4cbfb5a4dcb8d10cb97979a17526e0aa1c266f59ac0970d1385";
-        // First-run mode: if you change sim semantics intentionally and need
-        // a new hash, replace the literal above with the value reported here.
+        // Cross-platform canary. CI on macOS and Windows must produce this
+        // exact value. If either runner reports a different value, the sim
+        // has a non-deterministic path — find it before merging.
+        // v2 schema (Phase 1 step 2: + map/units/cities/players).
+        const string Expected = "4363df82c052bfd51434d3da894e807553dd84891bf908ed63c1e26dc2388268";
         Assert.True(
             hashA == Expected,
             $"determinism hash drifted. expected={Expected} actual={hashA}");
@@ -68,10 +63,9 @@ public class DeterminismTests
     [Fact]
     public void DifferentSeeds_DivergeOverTime()
     {
-        // A separate sanity check that the sim actually depends on the seed
-        // path. If both seeds produced identical states the determinism test
-        // above would still pass, so this guards against an accidentally
-        // seedless sim.
+        // Sanity: the sim actually depends on the seed path. If both seeds
+        // produced identical states the determinism test above would still
+        // pass, so this guards against an accidentally seedless sim.
         var a = GameState.Initial(1);
         a.Rng = new Math.SimRng(1);
         a = GameSim.StepN(a, 100);
@@ -80,38 +74,28 @@ public class DeterminismTests
         b.Rng = new Math.SimRng(2);
         b = GameSim.StepN(b, 100);
 
-        // RNG states will diverge whether or not the dot path uses the rng,
-        // because the seeds differ.
         Assert.NotEqual(a.Rng.State, b.Rng.State);
+    }
+
+    [Fact]
+    public void Serializer_RoundTripIsStable()
+    {
+        // Serialize the same state twice and compare bytes. Catches any
+        // hidden non-determinism in the serializer itself (e.g. a stray
+        // Dictionary iteration).
+        var s = GameState.Initial(7);
+        s = GameSim.StepN(s, 100);
+
+        byte[] a = StateSerializer.ToBytes(s);
+        byte[] b = StateSerializer.ToBytes(s);
+        Assert.Equal(a, b);
     }
 
     private static string HashState(GameState s)
     {
-        // Hand-rolled byte serializer. We deliberately do not use BinaryWriter
-        // or anything that depends on the platform's endianness or the BCL
-        // version: every field is written as a fixed-size little-endian
-        // primitive so the hash is reproducible byte-for-byte everywhere.
-        Span<byte> buf = stackalloc byte[
-            sizeof(int) +     // Version
-            sizeof(int) +     // Tick
-            sizeof(ulong) +   // Rng.State
-            sizeof(long) +    // DotPos.X
-            sizeof(long) +    // DotPos.Y
-            sizeof(long) +    // DotVel.X
-            sizeof(long)      // DotVel.Y
-        ];
-
-        int o = 0;
-        BinaryPrimitives.WriteInt32LittleEndian(buf[o..], s.Version); o += 4;
-        BinaryPrimitives.WriteInt32LittleEndian(buf[o..], s.Tick); o += 4;
-        BinaryPrimitives.WriteUInt64LittleEndian(buf[o..], s.Rng.State); o += 8;
-        BinaryPrimitives.WriteInt64LittleEndian(buf[o..], s.DotPos.X.Raw); o += 8;
-        BinaryPrimitives.WriteInt64LittleEndian(buf[o..], s.DotPos.Y.Raw); o += 8;
-        BinaryPrimitives.WriteInt64LittleEndian(buf[o..], s.DotVel.X.Raw); o += 8;
-        BinaryPrimitives.WriteInt64LittleEndian(buf[o..], s.DotVel.Y.Raw); o += 8;
-
+        byte[] bytes = StateSerializer.ToBytes(s);
         Span<byte> hash = stackalloc byte[32];
-        SHA256.HashData(buf, hash);
+        SHA256.HashData(bytes, hash);
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 }

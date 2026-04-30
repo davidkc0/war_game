@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using WarGame.Sim.Math;
 
 namespace WarGame.Sim.State;
@@ -9,13 +10,27 @@ namespace WarGame.Sim.State;
 //
 // Bump CurrentVersion whenever the schema changes so we can reject loading
 // stale replays/saves.
+//
+// Schema versions:
+//   1 — Phase 0: rng + dot pos/vel only.
+//   2 — Phase 1 step 2: + map, units, cities, players. Dot retained as a
+//       transient debug feature; removed in Phase 1 step 4.
 public struct GameState
 {
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
 
     public int Version;
     public int Tick;
     public SimRng Rng;
+
+    public MapState Map;
+    public List<Unit> Units;     // index in list == Unit.Id; never reordered
+    public List<City> Cities;    // index in list == City.Id; never reordered
+    public Player[] Players;     // length 3: indices [None, Player1, Player2]
+
+    // Phase 0 leftover. Will be removed at Phase 1 step 4 once the renderer
+    // draws real units. Kept in the meantime so the existing scene remains
+    // visually verifiable while features land.
     public FPVec2 DotPos;
     public FPVec2 DotVel;
 
@@ -26,11 +41,20 @@ public struct GameState
             Version = CurrentVersion,
             Tick = 0,
             Rng = new SimRng(seed),
-            // Phase 0 dot starts at the origin. Phase 1 replaces this with
-            // unit/city state.
+
+            // Step 2 ships an empty 1x1 map / no units / no cities by default.
+            // Step 3+ test maps and Phase 2's procgen produce real maps.
+            Map = new MapState.Builder(1, 1).Build(),
+            Units = new List<Unit>(),
+            Cities = new List<City>(),
+            Players = new Player[]
+            {
+                new() { Id = PlayerId.None,    Eco = FP.Zero, DoctrineId = 0 },
+                new() { Id = PlayerId.Player1, Eco = FP.Zero, DoctrineId = 0 },
+                new() { Id = PlayerId.Player2, Eco = FP.Zero, DoctrineId = 0 },
+            },
+
             DotPos = FPVec2.Zero,
-            // 0.05 units per tick on each axis — chosen so a 10000-tick run
-            // lands at a non-trivial position with no overflow.
             DotVel = new FPVec2(
                 FP.FromRaw(FP.OneRaw / 20),
                 FP.FromRaw(FP.OneRaw / 30)),
