@@ -27,6 +27,12 @@ public static class GameSim
     {
         s.Tick += 1;
 
+        // Once a winner has been declared, freeze the sim. We still tick
+        // the clock so replay timestamps remain stable, but commands and
+        // physical systems are skipped — the final state is the artifact
+        // the user / replay viewer wants to inspect.
+        if (s.Winner != State.PlayerId.None) return s;
+
         // 1) Apply commands. Order is the order the network/replay delivered
         //    them — the caller is responsible for stable ordering.
         if (commands is not null)
@@ -42,26 +48,40 @@ public static class GameSim
                     case BuildUnitCommand b:
                         ApplyBuildUnit(ref s, b);
                         break;
+                    case BuildFortCommand f:
+                        ApplyBuildFort(ref s, f);
+                        break;
+                    case RazeFortCommand r:
+                        ApplyRazeFort(ref s, r);
+                        break;
+                    case BuildRoadCommand br:
+                        ApplyBuildRoad(ref s, br);
+                        break;
+                    case CancelRoadCommand cr:
+                        ApplyCancelRoad(ref s, cr);
+                        break;
                     case NoOpCommand:
                         break;
-                    // Unrecognized commands are silently ignored. That keeps
-                    // forward-compat with future command types when older
-                    // clients replay newer logs (caller should validate
-                    // schema version separately).
                     default: break;
                 }
             }
         }
 
-        // 2) Tick systems in fixed order. The order matters: Movement
-        //    happens first (so a unit moving onto an enemy can engage this
-        //    tick), Combat second (enemies trade damage), Production last
-        //    (newly-captured cities contribute to their captor next tick).
-        //    PowerProjection / Supply-routing / Borders / Encirclement
-        //    arrive in steps 6 & 7.
+        // 2) Tick systems in fixed order.
+        //    Movement → Combat → CityCapture → FortConstruction →
+        //    RoadConstruction → Production → PowerProjection →
+        //    SupplyLines → Healing → Maintenance → WinConditions
         Movement.Tick(ref s);
         Combat.Tick(ref s);
+        CityCapture.Tick(ref s);
+        FortConstruction.Tick(ref s);
+        RoadConstruction.Tick(ref s);
         Production.Tick(ref s);
+        PowerProjection.Tick(ref s);
+        SupplyLines.Tick(ref s);
+        Healing.Tick(ref s);
+        Maintenance.Tick(ref s);
+        WinConditions.Tick(ref s);
 
         return s;
     }
@@ -83,18 +103,13 @@ public static class GameSim
         ref Unit u = ref units[cmd.UnitId];
 
         if (!u.IsAlive) return;
-        // Owner check — sim layer trust boundary. PLAN.md §5 will lean on
-        // this when lockstep clients receive commands from peers.
         if ((int)u.Owner != cmd.PlayerId) return;
         if (!s.Map.InBounds(cmd.TargetX, cmd.TargetY)) return;
 
         bool isHeavy = u.Type == UnitType.Heavy;
         var path = Pathfinding.FindPath(s.Map, u.TileX, u.TileY, cmd.TargetX, cmd.TargetY, isHeavy);
 
-        // Re-target: discard current path and partial progress. Visual jitter
-        // (unit appears to snap back to tile center) is acceptable in v1; if
-        // playtesting flags it, Phase 3 can add the "finish current edge,
-        // then re-path from the next tile" smoothing.
+        RoadConstruction.CancelForUnit(ref s, cmd.UnitId);
         u.Path.Clear();
         for (int i = 0; i < path.Count; i++) u.Path.Add(path[i]);
         u.ProgressRaw = 0;
@@ -110,7 +125,6 @@ public static class GameSim
         if (c.Owner == PlayerId.None) return;
         if ((int)c.Owner != cmd.PlayerId) return;
 
-        // Cancel order: clear progress and stop. (Phase 1 doesn't refund.)
         if (cmd.Type is null)
         {
             c.ProductionOrder = 0;
@@ -118,13 +132,121 @@ public static class GameSim
             return;
         }
 
-        // Re-issuing the same order is a no-op (don't reset progress);
-        // switching types resets accumulated progress.
         byte want = (byte)((byte)cmd.Type.Value + 1);
         if (c.ProductionOrder != want)
         {
             c.ProductionOrder = want;
             c.ProductionProgress = FP.Zero;
         }
+    }
+
+    private static void ApplyBuildFort(ref GameState s, BuildFortCommand cmd)
+    {
+        var owner = (PlayerId)cmd.PlayerId;
+        if (owner == PlayerId.None) return;
+        if (!s.Map.InBounds(cmd.TargetX, cmd.TargetY)) return;
+
+        // Tile must be Plains.
+        TileType tile = s.Map.GetTileUnchecked(cmd.TargetX, cmd.TargetY);
+        if (tile != TileType.Plains) return;
+
+        // Tile must be in player's territory.
+        int tileIdx = cmd.TargetY * s.Map.Width + cmd.TargetX;
+        if (s.TileOwner is null || tileIdx >= s.TileOwner.Length) return;
+        if ((PlayerId)s.TileOwner[tileIdx] != owner) return;
+
+        // Fort cap: completed + pending must not exceed max.
+        int total = FortConstruction.CountPlayerForts(s, owner)
+                  + FortConstruction.CountPendingForts(s, owner);
+        if (total >= FortConstruction.MaxFortsPerPlayer) return;
+
+        // Check if there's already a pending fort on this tile.
+        if (s.PendingForts is not null)
+        {
+            for (int i = 0; i < s.PendingForts.Count; i++)
+            {
+                if (s.PendingForts[i].TileX == cmd.TargetX
+                    && s.PendingForts[i].TileY == cmd.TargetY)
+                    return;
+            }
+        }
+
+        // Deduct ECO.
+        ref Player p = ref s.Players[(int)owner];
+        FP cost = FP.FromInt(FortConstruction.FortEcoCost);
+        if (p.Eco < cost) return;
+        p.Eco -= cost;
+
+        // Queue the fort construction.
+        s.PendingForts ??= new List<FortOrder>();
+        s.PendingForts.Add(FortOrder.Create(cmd.TargetX, cmd.TargetY, owner,
+                                             FortConstruction.FortBuildTicks));
+    }
+
+    private static void ApplyRazeFort(ref GameState s, RazeFortCommand cmd)
+    {
+        var owner = (PlayerId)cmd.PlayerId;
+        if (owner == PlayerId.None) return;
+        if (!s.Map.InBounds(cmd.TargetX, cmd.TargetY)) return;
+
+        // Tile must be a Fort.
+        TileType tile = s.Map.GetTileUnchecked(cmd.TargetX, cmd.TargetY);
+        if (tile != TileType.Fort) return;
+
+        // Find the city entry for this fort and verify ownership.
+        Span<City> cities = CollectionsMarshal.AsSpan(s.Cities);
+        int fortCityIdx = -1;
+        for (int i = 0; i < cities.Length; i++)
+        {
+            ref City c = ref cities[i];
+            if (c.TileX == cmd.TargetX && c.TileY == cmd.TargetY && c.Owner == owner)
+            {
+                fortCityIdx = i;
+                break;
+            }
+        }
+        if (fortCityIdx < 0) return;
+
+        // Revert tile to Plains and remove the city entry.
+        s.Map.SetTile(cmd.TargetX, cmd.TargetY, TileType.Plains);
+        s.Cities.RemoveAt(fortCityIdx);
+
+        // Re-index city Ids to maintain the id == index invariant.
+        // This is O(n) but forts are rare (max 3 per player, max 6 total).
+        for (int i = fortCityIdx; i < s.Cities.Count; i++)
+        {
+            var c = s.Cities[i];
+            c.Id = i;
+            s.Cities[i] = c;
+        }
+    }
+
+    private static void ApplyBuildRoad(ref GameState s, BuildRoadCommand cmd)
+    {
+        var owner = (PlayerId)cmd.PlayerId;
+        if (owner == PlayerId.None) return;
+        if ((uint)cmd.UnitId >= (uint)s.Units.Count) return;
+        if (!s.Map.InBounds(cmd.TargetX, cmd.TargetY)) return;
+
+        Unit u = s.Units[cmd.UnitId];
+        if (!u.IsAlive) return;
+        if (u.Owner != owner) return;
+        if (u.Path is { Count: > 0 }) return;
+
+        List<int> path = Pathfinding.FindRoadBuildPath(s.Map, u.TileX, u.TileY, cmd.TargetX, cmd.TargetY);
+        if (path.Count == 0) return;
+
+        RoadConstruction.CancelForUnit(ref s, cmd.UnitId);
+        s.PendingRoads ??= new List<RoadOrder>();
+        s.PendingRoads.Add(RoadOrder.Create(cmd.UnitId, owner, cmd.TargetX, cmd.TargetY, path));
+    }
+
+    private static void ApplyCancelRoad(ref GameState s, CancelRoadCommand cmd)
+    {
+        var owner = (PlayerId)cmd.PlayerId;
+        if (owner == PlayerId.None) return;
+        if ((uint)cmd.UnitId >= (uint)s.Units.Count) return;
+        if (s.Units[cmd.UnitId].Owner != owner) return;
+        RoadConstruction.CancelForUnit(ref s, cmd.UnitId);
     }
 }

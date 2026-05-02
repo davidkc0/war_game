@@ -17,6 +17,11 @@ public class MovementTests
     {
         var s = GameState.Initial(seed: 1);
         s.Map = new MapState.Builder(strip, 1).Build();
+        // A city at the unit's starting tile keeps the encirclement system
+        // happy — the unit has a supply source. (Phase 3a turns this into
+        // proper supply lines; for Phase 1 a city under each test's units
+        // is enough.)
+        s.Cities.Add(City.Create(0, startX, 0, owner, isCapital: true));
         s.Units.Add(Unit.Create(0, owner, UnitType.Light, startX, 0));
         return s;
     }
@@ -77,6 +82,7 @@ public class MovementTests
         var sLight = BuildStripWithLight(30, 0);
         var sHeavy = GameState.Initial(seed: 1);
         sHeavy.Map = new MapState.Builder(30, 1).Build();
+        sHeavy.Cities.Add(City.Create(0, 0, 0, PlayerId.Player1, isCapital: true));
         sHeavy.Units.Add(Unit.Create(0, PlayerId.Player1, UnitType.Heavy, 0, 0));
 
         var moveLight = new List<Command> { new MoveUnitCommand(0, 20, 0) { PlayerId = (int)PlayerId.Player1 } };
@@ -106,6 +112,7 @@ public class MovementTests
         var b = new MapState.Builder(20, 2);
         for (int x = 0; x < 20; x++) b.Set(x, 1, TileType.Road);
         s.Map = b.Build();
+        s.Cities.Add(City.Create(0, 0, 0, PlayerId.Player1, isCapital: true));
         s.Units.Add(Unit.Create(0, PlayerId.Player1, UnitType.Light, 0, 0)); // plains
         s.Units.Add(Unit.Create(1, PlayerId.Player1, UnitType.Light, 0, 1)); // road
 
@@ -172,6 +179,7 @@ public class MovementTests
         {
             var x = GameState.Initial(seed: 99);
             x.Map = new MapState.Builder(20, 20).Build();
+            x.Cities.Add(City.Create(0, 0, 0, PlayerId.Player1, isCapital: true));
             x.Units.Add(Unit.Create(0, PlayerId.Player1, UnitType.Light, 0, 0));
             x.Units.Add(Unit.Create(1, PlayerId.Player1, UnitType.Heavy, 0, 1));
             return x;

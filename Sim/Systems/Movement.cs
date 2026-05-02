@@ -12,6 +12,11 @@ namespace WarGame.Sim.Systems;
 // next edge — so a move command issued for a faraway target keeps moving
 // without stalling at tile boundaries.
 //
+// Phase 1 stacking rule: friendly units can PASS THROUGH each other (they
+// share a tile transiently) but cannot END movement on an occupied tile.
+// Enemy units always block. This prevents friendly gridlock while keeping
+// combat legible (no friendly stacking at rest).
+//
 // Why CollectionsMarshal.AsSpan: List<Unit>.this[i] returns a *copy* of the
 // struct; we need ref access to mutate in place without re-writing the
 // element back. This is safe as long as the list is not resized during
@@ -44,6 +49,13 @@ public static class Movement
                 continue;
             }
 
+            // Enemy-only blocking: a unit cannot move into a tile occupied
+            // by an enemy unit. Friendly units are allowed to pass through
+            // each other (they'll be stacked on the same tile transiently
+            // during transit). Final destination stacking is handled below.
+            if (IsTileOccupiedByEnemy(units, i, u.Owner, nx, ny))
+                continue;
+
             FP baseSpeed = UnitStats.TilesPerTick(u.Type);
             FP terrainFactor = FP.FromRaw(nextTile.SpeedFactorRaw(isHeavy));
             FP advance = baseSpeed * terrainFactor;
@@ -66,10 +78,17 @@ public static class Movement
                 // park here.
                 if (u.Path.Count == 0) break;
                 int nf = u.Path[0];
-                TileType nt = s.Map.GetTileUnchecked(nf % s.Map.Width, nf / s.Map.Width);
+                int nfx = nf % s.Map.Width, nfy = nf / s.Map.Width;
+                TileType nt = s.Map.GetTileUnchecked(nfx, nfy);
                 if (!nt.IsPassable(isHeavy))
                 {
                     u.Path.Clear();
+                    newProgress = FP.Zero;
+                    break;
+                }
+                // Enemy blocking on chained crossings too.
+                if (IsTileOccupiedByEnemy(units, i, u.Owner, nfx, nfy))
+                {
                     newProgress = FP.Zero;
                     break;
                 }
@@ -77,5 +96,23 @@ public static class Movement
 
             u.ProgressRaw = u.Path.Count == 0 ? 0 : newProgress.Raw;
         }
+    }
+
+    /// <summary>
+    /// Returns true if any ENEMY unit occupies the given tile. Friendly
+    /// units are allowed to pass through each other so armies don't
+    /// gridlock on narrow paths.
+    /// </summary>
+    private static bool IsTileOccupiedByEnemy(Span<Unit> units, int selfIndex, PlayerId myOwner, int x, int y)
+    {
+        for (int j = 0; j < units.Length; j++)
+        {
+            if (j == selfIndex) continue;
+            ref Unit other = ref units[j];
+            if (!other.IsAlive) continue;
+            if (other.Owner == myOwner) continue; // friendly — pass through
+            if (other.TileX == x && other.TileY == y) return true;
+        }
+        return false;
     }
 }

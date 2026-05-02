@@ -111,6 +111,7 @@ public class TileTypePassabilityTests
     [InlineData(TileType.Water, false, false)]
     [InlineData(TileType.Water, true, false)]
     [InlineData(TileType.Road, false, true)]
+    [InlineData(TileType.Bridge, false, true)]
     [InlineData(TileType.City, false, true)]
     [InlineData(TileType.Capital, true, true)]
     public void Passability_MatchesPlanSpec(TileType t, bool heavy, bool expected)
@@ -122,8 +123,10 @@ public class TileTypePassabilityTests
     public void RoadGivesSpeedBonus()
     {
         long road = TileType.Road.SpeedFactorRaw(false);
+        long bridge = TileType.Bridge.SpeedFactorRaw(false);
         long plains = TileType.Plains.SpeedFactorRaw(false);
         Assert.True(road > plains, "road should be faster than plains");
+        Assert.Equal(road, bridge);
     }
 
     [Fact]

@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+using System;
 using System.Runtime.InteropServices;
 using WarGame.Sim.Math;
 using WarGame.Sim.State;
@@ -6,21 +6,32 @@ using WarGame.Sim.State;
 namespace WarGame.Sim.Systems;
 
 // Per-tick combat resolution. A unit "engages" any enemy unit on the same
-// tile or 4-connected adjacent tile (Phase 1 grid-RTS convention; Phase 3
-// might revisit ranged units but they are out of v1 scope per PLAN.md §8).
+// tile or 4-connected adjacent tile (Phase 1 grid-RTS convention).
 //
 // Each living unit picks one engaged enemy and deals DamagePerTick to it.
 // Tie-break: enemy with the lowest Id. This is deterministic without any
 // extra sorting because units are stored in Id order in the list.
 //
+// Three damage modifiers stack multiplicatively:
+//   1. CONCENTRATION-OF-FORCE: +15% per additional friendly unit engaged
+//      with the same target.
+//   2. TERRAIN DEFENSE: the *defender's* tile type applies a damage
+//      reduction (e.g., forest = 0.70×, fort = 0.45×).
+//   3. ATTACKER PENALTY: a unit that is actively moving (has a non-empty
+//      Path) deals 15% less damage. Rewards holding position.
+//
 // Damage is applied in two passes (read-only scan, then mutating apply) so
 // that all damage in a given tick is computed against the *start-of-tick*
 // state. Without this, the order of iteration would influence outcomes
-// (unit 0 kills unit 1 before unit 1 gets to swing back), which is a real
-// gameplay decision that PLAN.md doesn't pin down. Two-pass is the simpler,
-// fairer default.
+// (unit 0 kills unit 1 before unit 1 gets to swing back). Two-pass is the
+// simpler, fairer default.
 public static class Combat
 {
+    // +15% damage per additional friendly unit attacking the same target.
+    private static readonly FP ConcentrationBonusPerAlly = FP.FromInt(15) / FP.FromInt(100);
+    // Moving attackers deal 15% less damage.
+    private static readonly FP MovingAttackerPenalty = FP.FromInt(85) / FP.FromInt(100);
+
     public static void Tick(ref GameState s)
     {
         // Pass 1: each unit chooses a target and notes the damage it will
@@ -43,40 +54,49 @@ public static class Combat
                 if (!e.IsAlive) continue;
                 if (e.Owner == u.Owner) continue;
                 if (!IsAdjacentOrSame(u.TileX, u.TileY, e.TileX, e.TileY)) continue;
-                // First match wins because the list is iterated in Id order
-                // and we never break — but in case of multi-engage the
-                // *lowest Id* enemy is selected by virtue of j ascending.
                 targetId = j;
                 break;
             }
             targets[i] = targetId;
         }
 
-        // Pass 2: apply damage. We mutate via a span so dead-this-tick
-        // units stay readable to the next loop iteration (the IsAlive check
-        // is on the post-mutation view, so a unit can deal a final blow
-        // before dying — matches the standard "simultaneous swing" feel).
+        // Pass 1b: count how many friendly units share the same target.
+        Span<int> targetCount = n <= 256 ? stackalloc int[n] : new int[n];
+        for (int i = 0; i < n; i++)
+        {
+            int tid = targets[i];
+            if (tid >= 0) targetCount[tid]++;
+        }
+
+        // Pass 2: apply damage with all three modifiers.
         Span<Unit> units = CollectionsMarshal.AsSpan(s.Units);
         for (int i = 0; i < units.Length; i++)
         {
             int targetId = targets[i];
             if (targetId < 0) continue;
-            Unit attacker = units[i];
-            // Re-check liveness in case a prior attacker in this tick
-            // already killed this attacker (the swap would not have
-            // happened in pass 1 since pass 1 read the start-of-tick state,
-            // but two-pass also means *every* swing lands as long as the
-            // attacker was alive at start-of-tick). We allow one final
-            // swing from the dying unit by skipping this guard.
-            FP dmg = UnitStats.DamagePerTick(attacker.Type);
+            ref Unit attacker = ref units[i];
             ref Unit target = ref units[targetId];
+
+            FP baseDmg = UnitStats.DamagePerTick(attacker.Type);
+
+            // 1) Concentration-of-force bonus.
+            int allies = targetCount[targetId];
+            FP multiplier = FP.One + ConcentrationBonusPerAlly * FP.FromInt(allies - 1);
+            FP dmg = baseDmg * multiplier;
+
+            // 2) Attacker penalty: moving units deal less damage.
+            if (attacker.IsMoving)
+                dmg = dmg * MovingAttackerPenalty;
+
+            // 3) Terrain defense: the defender's tile reduces incoming damage.
+            TileType defenderTile = s.Map.GetTileUnchecked(target.TileX, target.TileY);
+            FP defenseMul = FP.FromRaw(defenderTile.DefenseMultiplierRaw());
+            dmg = dmg * defenseMul;
+
             target.Hp -= dmg;
-            // Dead units retain their slot (preserves Id stability) but
-            // stop participating in subsequent ticks.
         }
 
-        // Pass 3: clean up dead units' transient state so they don't
-        // continue showing as "moving" or holding a stale path.
+        // Pass 3: clean up dead units' transient state.
         for (int i = 0; i < units.Length; i++)
         {
             ref Unit u = ref units[i];

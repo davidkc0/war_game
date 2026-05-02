@@ -52,10 +52,12 @@ public static class StateSerializer
             WriteI32(stream, c.TileX);
             WriteI32(stream, c.TileY);
             stream.WriteByte((byte)c.Owner);
+            stream.WriteByte((byte)c.OriginalOwner);
             stream.WriteByte((byte)(c.IsCapital ? 1 : 0));
             WriteI32(stream, c.SupplyCapacity);
             WriteI64(stream, c.ProductionProgress.Raw);
             stream.WriteByte(c.ProductionOrder);
+            WriteI32(stream, c.CaptureHp);
         }
 
         // Players (fixed length array — but write the length anyway so the
@@ -66,6 +68,69 @@ public static class StateSerializer
             stream.WriteByte((byte)p.Id);
             WriteI64(stream, p.Eco.Raw);
             stream.WriteByte(p.DoctrineId);
+        }
+
+        // TileOwner (length first; 0 if null).
+        int ownerLen = s.TileOwner is null ? 0 : s.TileOwner.Length;
+        WriteI32(stream, ownerLen);
+        if (s.TileOwner is not null)
+            foreach (byte b in s.TileOwner) stream.WriteByte(b);
+
+        // Supply arrays.
+        int supplyLen = s.TileSupplyOwner is null ? 0 : s.TileSupplyOwner.Length;
+        WriteI32(stream, supplyLen);
+        if (s.TileSupplyOwner is not null)
+            foreach (byte b in s.TileSupplyOwner) stream.WriteByte(b);
+
+        int roadSupplyLen = s.TileRoadSupplyOwner is null ? 0 : s.TileRoadSupplyOwner.Length;
+        WriteI32(stream, roadSupplyLen);
+        if (s.TileRoadSupplyOwner is not null)
+            foreach (byte b in s.TileRoadSupplyOwner) stream.WriteByte(b);
+
+        int unitSupplyLen = s.UnitSupplyStatus is null ? 0 : s.UnitSupplyStatus.Length;
+        WriteI32(stream, unitSupplyLen);
+        if (s.UnitSupplyStatus is not null)
+            foreach (byte b in s.UnitSupplyStatus) stream.WriteByte(b);
+
+        // Win state.
+        stream.WriteByte((byte)s.Winner);
+        int holdLen = s.CityHoldTicks is null ? 0 : s.CityHoldTicks.Length;
+        WriteI32(stream, holdLen);
+        if (s.CityHoldTicks is not null)
+            foreach (int t in s.CityHoldTicks) WriteI32(stream, t);
+
+        // Pending forts.
+        int fortLen = s.PendingForts is null ? 0 : s.PendingForts.Count;
+        WriteI32(stream, fortLen);
+        if (s.PendingForts is not null)
+        {
+            foreach (var f in s.PendingForts)
+            {
+                WriteI32(stream, f.TileX);
+                WriteI32(stream, f.TileY);
+                stream.WriteByte((byte)f.Owner);
+                WriteI32(stream, f.TicksRemaining);
+            }
+        }
+
+        // Pending road/bridge construction.
+        int roadLen = s.PendingRoads is null ? 0 : s.PendingRoads.Count;
+        WriteI32(stream, roadLen);
+        if (s.PendingRoads is not null)
+        {
+            foreach (var r in s.PendingRoads)
+            {
+                WriteI32(stream, r.UnitId);
+                stream.WriteByte((byte)r.Owner);
+                WriteI32(stream, r.TargetX);
+                WriteI32(stream, r.TargetY);
+                WriteI32(stream, r.CurrentPathIndex);
+                WriteI32(stream, r.TicksRemainingOnTile);
+                int pathLen = r.Path is null ? 0 : r.Path.Count;
+                WriteI32(stream, pathLen);
+                if (r.Path is not null)
+                    foreach (int p in r.Path) WriteI32(stream, p);
+            }
         }
     }
 

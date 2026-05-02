@@ -16,9 +16,13 @@ namespace WarGame.Sim.State;
 //   2 — Phase 1 step 2: + map, units, cities, players (dot retained).
 //   3 — Phase 1 step 4: dot removed; movement state added on Unit.
 //   4 — Phase 1 step 5: + City.ProductionOrder.
+//   5 — Phase 1 step 6: + TileOwner (derived; cached for renderer + encirclement).
+//   7 — Phase 1 step 11: + City.CaptureHp (Advance Wars-style capture).
+//   8 — Phase 1.5: + PendingForts, Fort tile type, terrain defense, maintenance.
+//   9 — Phase 3a: + supply state, Bridge tile type, PendingRoads.
 public struct GameState
 {
-    public const int CurrentVersion = 4;
+    public const int CurrentVersion = 9;
 
     public int Version;
     public int Tick;
@@ -28,6 +32,42 @@ public struct GameState
     public List<Unit> Units;     // index in list == Unit.Id; never reordered
     public List<City> Cities;    // index in list == City.Id; never reordered
     public Player[] Players;     // length 3: indices [None, Player1, Player2]
+
+    // Per-tile owner derived from the power-projection field. Length == w*h.
+    // This is *technically* derived state (recomputable from Units+Cities),
+    // but storing it lets renderers and encirclement detection read directly
+    // without redoing the field math. Always rewritten by PowerProjection
+    // each tick — never authored elsewhere.
+    public byte[] TileOwner;
+
+    // Per-tile supply ownership derived by SupplyLines. TileSupplyOwner
+    // marks normal friendly-territory supply. TileRoadSupplyOwner marks
+    // road/bridge-assisted supply, including routes outside friendly
+    // territory when not physically blocked by enemy units.
+    public byte[] TileSupplyOwner;
+    public byte[] TileRoadSupplyOwner;
+
+    // Per-unit supply status, indexed by Unit.Id.
+    public byte[] UnitSupplyStatus;
+
+    // Once a player wins, this is set to that PlayerId and the sim freezes
+    // (commands and system ticks are skipped). PlayerId.None = game in
+    // progress. Set exclusively by WinConditions system.
+    public PlayerId Winner;
+
+    // Per-player counter of consecutive ticks at >= 80% city ownership.
+    // Resets to zero whenever the ratio drops below threshold. Length 3:
+    // indices [None (unused), Player1, Player2]. Triggers victory when
+    // any slot reaches 30 * TicksPerSecond.
+    public int[] CityHoldTicks;
+
+    // Fort construction orders in progress. Each entry tracks a tile being
+    // converted to a Fort. Removed when complete or cancelled (territory lost).
+    public List<FortOrder> PendingForts;
+
+    // Road/bridge construction orders in progress. One active order per
+    // unit; cancelled by manual movement, death, or explicit command.
+    public List<RoadOrder> PendingRoads;
 
     public static GameState Initial(ulong seed)
     {
@@ -47,6 +87,16 @@ public struct GameState
                 new() { Id = PlayerId.Player1, Eco = FP.Zero, DoctrineId = 0 },
                 new() { Id = PlayerId.Player2, Eco = FP.Zero, DoctrineId = 0 },
             },
+            // 1x1 default; PowerProjection.Tick allocates the right size on
+            // first tick when the map width/height changes.
+            TileOwner = new byte[1],
+            TileSupplyOwner = new byte[1],
+            TileRoadSupplyOwner = new byte[1],
+            UnitSupplyStatus = System.Array.Empty<byte>(),
+            Winner = PlayerId.None,
+            CityHoldTicks = new int[3],
+            PendingForts = new List<FortOrder>(),
+            PendingRoads = new List<RoadOrder>(),
         };
     }
 }

@@ -24,8 +24,14 @@ public static class Pathfinding
     // pairs; if costs explode, the priority encoding below could overflow.
     public const int CostPlains   = 12;
     public const int CostRoad     = 8;       // 12 / 1.5
+    public const int CostRiver    = 36;      // 1/3 speed crossing
     public const int CostForestH  = 24;      // heavy in forest = half speed
     public const int CostMountainL = 48;     // light in mountain = quarter speed
+    public const int CostBuildRoad = 1;
+    public const int CostBuildPlains = 10;
+    public const int CostBuildForest = 18;
+    public const int CostBuildMountain = 45;
+    public const int CostBuildBridge = 70;
 
     /// <summary>
     /// Find a 4-connected path. Returns flat tile indices in walking order,
@@ -124,8 +130,103 @@ public static class Pathfinding
     private static int TileEnterCost(TileType t, bool isHeavyUnit) => t switch
     {
         TileType.Road => CostRoad,
+        TileType.Bridge => CostRoad,
+        TileType.River => CostRiver,
         TileType.Forest => isHeavyUnit ? CostForestH : CostPlains,
         TileType.Mountain => isHeavyUnit ? int.MaxValue : CostMountainL, // heavy filtered earlier
         _ => CostPlains,
+    };
+
+    /// <summary>
+    /// Deterministic engineering A*. Used by road preview and BuildRoadCommand.
+    /// Returns a path excluding start, including goal. Water, mountain peaks,
+    /// cities, capitals, and forts are blocked; rivers are allowed and become
+    /// bridges during construction.
+    /// </summary>
+    public static List<int> FindRoadBuildPath(MapState map, int startX, int startY, int goalX, int goalY)
+    {
+        var result = new List<int>();
+        if (!map.InBounds(startX, startY) || !map.InBounds(goalX, goalY)) return result;
+        if (startX == goalX && startY == goalY) return result;
+        if (!IsEngineeringPassable(map.GetTileUnchecked(goalX, goalY))) return result;
+
+        int w = map.Width, h = map.Height, n = w * h;
+        int startIdx = startY * w + startX;
+        int goalIdx = goalY * w + goalX;
+
+        int[] gScore = new int[n];
+        int[] cameFrom = new int[n];
+        bool[] closed = new bool[n];
+        Array.Fill(gScore, int.MaxValue);
+        Array.Fill(cameFrom, -1);
+
+        gScore[startIdx] = 0;
+        var open = new PriorityQueue<int, long>();
+        open.Enqueue(startIdx, EncodePriority(Heuristic(startX, startY, goalX, goalY) * CostBuildPlains, startIdx));
+
+        ReadOnlySpan<int> dx = stackalloc int[] { 0, 1, 0, -1 };
+        ReadOnlySpan<int> dy = stackalloc int[] { -1, 0, 1, 0 };
+
+        while (open.TryDequeue(out int current, out _))
+        {
+            if (closed[current]) continue;
+            if (current == goalIdx) break;
+            closed[current] = true;
+
+            int cx = current % w, cy = current / w;
+            int currentG = gScore[current];
+
+            for (int i = 0; i < 4; i++)
+            {
+                int nx = cx + dx[i], ny = cy + dy[i];
+                if (!map.InBounds(nx, ny)) continue;
+
+                int nIdx = ny * w + nx;
+                if (closed[nIdx]) continue;
+
+                TileType t = map.GetTileUnchecked(nx, ny);
+                if (!IsEngineeringPassable(t)) continue;
+
+                int tentativeG = currentG + EngineeringEnterCost(t);
+                if (tentativeG >= gScore[nIdx]) continue;
+
+                cameFrom[nIdx] = current;
+                gScore[nIdx] = tentativeG;
+                int f = tentativeG + Heuristic(nx, ny, goalX, goalY) * CostBuildPlains;
+                open.Enqueue(nIdx, EncodePriority(f, nIdx));
+            }
+        }
+
+        if (cameFrom[goalIdx] < 0) return result;
+
+        int idx = goalIdx;
+        while (idx != startIdx)
+        {
+            result.Add(idx);
+            idx = cameFrom[idx];
+        }
+        result.Reverse();
+        return result;
+    }
+
+    public static bool IsEngineeringPassable(TileType t) => t switch
+    {
+        TileType.Water => false,
+        TileType.MountainPeak => false,
+        TileType.City => false,
+        TileType.Capital => false,
+        TileType.Fort => false,
+        _ => true,
+    };
+
+    public static int EngineeringEnterCost(TileType t) => t switch
+    {
+        TileType.Road => CostBuildRoad,
+        TileType.Bridge => CostBuildRoad,
+        TileType.Plains => CostBuildPlains,
+        TileType.Forest => CostBuildForest,
+        TileType.Mountain => CostBuildMountain,
+        TileType.River => CostBuildBridge,
+        _ => CostBuildPlains,
     };
 }

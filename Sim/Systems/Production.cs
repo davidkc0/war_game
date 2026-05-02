@@ -84,9 +84,17 @@ public static class Production
 
             if (c.ProductionProgress >= FP.FromInt(costPerUnit))
             {
-                // Spawn the unit on the city's tile. Stacking is allowed in
-                // Phase 1 (multiple units per tile); Step 7's encirclement
-                // logic will eventually need a tie-break for stacks.
+                // No-stacking rule: only spawn if the city tile is clear.
+                // If a friendly unit is already parked there, the order
+                // stalls (progress capped at full cost) until the player
+                // moves the blocker. Visual hint: the menu progress bar
+                // shows 100% but the unit hasn't appeared yet.
+                if (IsTileOccupied(s, c.TileX, c.TileY))
+                {
+                    c.ProductionProgress = FP.FromInt(costPerUnit);
+                    continue;
+                }
+
                 int newId = s.Units.Count;
                 s.Units.Add(Unit.Create(newId, c.Owner, type, c.TileX, c.TileY));
                 usage[(int)c.Owner] += supplyCost;
@@ -97,5 +105,16 @@ public static class Production
                 c.ProductionOrder = 0;
             }
         }
+    }
+
+    private static bool IsTileOccupied(in GameState s, int x, int y)
+    {
+        for (int i = 0; i < s.Units.Count; i++)
+        {
+            Unit u = s.Units[i];
+            if (!u.IsAlive) continue;
+            if (u.TileX == x && u.TileY == y) return true;
+        }
+        return false;
     }
 }

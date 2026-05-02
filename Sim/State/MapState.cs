@@ -46,6 +46,19 @@ public readonly struct MapState
 
     public TileType GetTileUnchecked(int x, int y) => (TileType)_tiles[y * Width + x];
 
+    // Mutate a single tile in-place. This breaks the "map is immutable"
+    // convention from Phase 0, but fort construction (Phase 1.5) requires
+    // converting Plains → Fort at runtime. Acceptable because:
+    //   1. It's a sim-layer operation (deterministic).
+    //   2. Serializer captures the full tile buffer each frame.
+    //   3. The alternative (copy-on-write) is wasteful for a single tile.
+    public void SetTile(int x, int y, TileType t)
+    {
+        if (!InBounds(x, y))
+            throw new ArgumentOutOfRangeException($"({x},{y}) out of {Width}x{Height} map");
+        _tiles[y * Width + x] = (byte)t;
+    }
+
     // Builder used at game start (and by Phase 2's procgen). Returns a
     // MapState whose backing array is fresh — modifying the builder after
     // Build() is called does not affect the returned MapState.

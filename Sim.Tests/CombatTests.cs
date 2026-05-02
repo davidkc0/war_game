@@ -12,6 +12,12 @@ public class CombatTests
     {
         var s = GameState.Initial(seed: 1);
         s.Map = new MapState.Builder(w, h).Build();
+        // Each player gets a capital at a corner so combat tests don't
+        // collide with the encirclement system. The corners are far enough
+        // from the test arena (typical 5x1) that they don't perturb power
+        // projection at the action area.
+        s.Cities.Add(City.Create(0, 0, 0,                 PlayerId.Player1, isCapital: true));
+        s.Cities.Add(City.Create(1, w - 1, h - 1,         PlayerId.Player2, isCapital: true));
         return s;
     }
 
@@ -168,11 +174,12 @@ public class ProductionTests
     public void SupplyCeiling_BlocksProductionWhenAtCap()
     {
         // One city has cap 5. Pre-fill with 5 light units (5 supply). Order
-        // another light — nothing should spawn.
+        // another light — nothing should spawn. Units placed on the city
+        // tile so maintenance doesn't drain ECO / kill them.
         var s = BuildEmpty(5, 5);
         s.Cities.Add(City.Create(0, 2, 2, PlayerId.Player1, isCapital: false));
         for (int i = 0; i < 5; i++)
-            s.Units.Add(Unit.Create(i, PlayerId.Player1, UnitType.Light, 0, i % 5));
+            s.Units.Add(Unit.Create(i, PlayerId.Player1, UnitType.Light, 2, 2));
 
         var order = new List<Commands.Command> {
             new Commands.BuildUnitCommand(0, UnitType.Light) { PlayerId = (int)PlayerId.Player1 },

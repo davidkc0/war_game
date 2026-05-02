@@ -1,6 +1,174 @@
-# PLAN.md — Procedural RTS Game (Working Title: TBD)
+# PLAN.md — Procedural RTS Game (Working Title: WarGame)
 
 > **Brief for AI coding agents (Cursor / Antigravity / Claude Code).** This document is the source of truth for the project. Read it fully before generating code. When in doubt, prefer the choices documented here over your own defaults. Flag deviations explicitly to the human operator.
+
+---
+
+## 0.0 Current Status & Resume Guide *(updated 2026-05-02)*
+
+### Where we are
+
+**Phase 0 (Project Skeleton): ✅ COMPLETE.** Mac+Windows determinism CI is green; binary export job still failing (non-blocker).
+
+**Phase 1 (Tactical Core): ✅ COMPLETE.** All 10 acceptance criteria met.
+
+**Phase 1.5 (Tactical Depth): ✅ COMPLETE.** Terrain combat modifiers, attacker penalty, unit maintenance, fortifications, and Advance Wars-style city capture all implemented and tested.
+
+**Phase 2 (Procedural Map Generation): ✅ COMPLETE.** Deterministic integer-only noise → rank-based land terrain assignment → irregular basin/lake carving → mountain-peak spines → river validation/shaping → same-territory road networks → connectivity guarantee → 4-axis BalanceValidator (path symmetry, terrain parity, choke points, connectivity) → reject-and-retry loop with deterministic seed perturbation.
+
+**Phase 3a / 3a.5 (Supply Lines + Road/Bridge Engineering): ✅ COMPLETE.** Supply now computes after power projection; friendly territory carries normal supply, roads/bridges carry road-assisted supply, enemy units interdict road supply, cut-off units pay higher maintenance and cannot heal, road-supplied units pay reduced maintenance, and selected units can build previewed roads/bridges with `B`.
+
+**Next up: Phase 3b (Fog of War).**
+
+### Repo layout (live at `~/Projects/war_game/`)
+
+```
+war_game/
+  PLAN.md                    ← this file
+  WarGame.sln                ← solution (3 projects)
+  WarGame.csproj             ← Godot game (Godot.NET.Sdk/4.6.2)
+  project.godot              ← 1600x900 default, resizable, no stretch
+  Sim/                       ← deterministic C# library, NO Godot deps
+    WarGame.Sim.csproj
+    Math/      FP.cs, FPVec2.cs, SimRng.cs
+    State/     GameState.cs, MapState.cs, TileType.cs, SupplyStatus.cs,
+               Unit.cs, City.cs, Player.cs, PlayerId.cs,
+               UnitType.cs, UnitStats.cs, FortOrder.cs, RoadOrder.cs
+    Commands/  Command.cs (MoveUnit, BuildUnit, BuildFort,
+               RazeFort, BuildRoad, CancelRoad, NoOp)
+    Systems/   Movement, Combat, Production, Healing,
+               CityCapture, FortConstruction, Maintenance,
+               PowerProjection, SupplyLines, RoadConstruction,
+               WinConditions, Encirclement (legacy instant-kill disabled),
+               Pathfinding (A*)
+    Generation/ IntegerNoise.cs, MapGenerator.cs, BalanceValidator.cs
+    GameSim.cs                ← per-tick orchestrator
+    StateSerializer.cs        ← canonical hash/replay serializer
+  Sim.Tests/                 ← xUnit, runs via `dotnet test`, 158 tests
+    WarGame.Sim.Tests.csproj
+  src/                       ← Godot scene scripts
+    Main.cs, Main.tscn        ← entry; switches to Game.tscn
+    Game.cs, Game.tscn        ← game scene; tick loop + HUD + input wiring
+    Render/   MapRenderer.cs, Theme.cs, TestMap.cs (now unused — Game.cs
+              calls MapGenerator instead; TestMap kept for ad-hoc debugging)
+    UI/       InputController.cs
+    Net/, AI/, Audio/, Tools/  (empty)
+  test/                      ← Chickensoft GoDotTest scaffold (unused)
+  .github/workflows/build.yml ← determinism matrix + (failing) godot-export job
+```
+
+### Schema state
+
+`GameState.CurrentVersion = 9`. Schema history:
+- v1–v5: Phase 0–1 baseline
+- v7: City.CaptureHp (Advance Wars-style capture)
+- v8: PendingForts, Fort tile type, terrain defense, maintenance
+- v9: TileSupplyOwner, TileRoadSupplyOwner, UnitSupplyStatus, PendingRoads, Bridge tile type
+
+Determinism golden hash pinned in `Sim.Tests/DeterminismTests.cs`. Bump version + repin whenever the byte layout changes.
+
+### Sim tick order (fixed, in GameSim.Step)
+
+```
+Movement → Combat → CityCapture → FortConstruction →
+RoadConstruction → Production → PowerProjection →
+SupplyLines → Healing → Maintenance → WinConditions
+```
+
+### What's actually playable today
+
+A hot-seat 1v1 RTS on a procedurally generated 60×60 map (`Sim/Generation/MapGenerator.cs`, runtime entry: `Game.cs` calls `MapGenerator.Generate(seed)`). Two players share keyboard/mouse; **Tab** swaps active seat. Real systems running:
+
+- **Tile grid** — Plains, Forest, Mountain, MountainPeak, Water, River, Road, Bridge, City, Capital, Fort
+- **Two unit types** (Light, Heavy) with PLAN.md §3 stat baseline
+- **Deterministic A* pathfinding** with terrain costs
+- **Movement** — sub-tile interpolation, friendly pass-through, enemy blocking
+- **Combat** — adjacent engagement, two-pass simultaneous damage, **three stacking modifiers**:
+  - Concentration-of-force (+15% per additional ally attacking same target)
+  - Terrain defense (forest 30%, mountain 50%, city 40%, fort 55% damage reduction)
+  - Moving-attacker penalty (15% less damage while in motion)
+- **City capture** — Advance Wars-style HP-based capture (cities 100 HP, capitals 200 HP; on-tile units deal 3 dmg/tick, adjacent 1 dmg/tick)
+- **Fortifications** — built via `F` key on Plains in owned territory; 50 ECO, 10 sec build; 55% damage reduction, base-25/radius-6 projection, +2 supply; CaptureHp 80; razeable via `R` key; max 3 per player; cancelled if territory lost during construction
+- **Supply lines** — owned cities/capitals/forts seed supply; friendly territory carries normal supply; roads/bridges carry road-assisted supply outside friendly territory; enemy units on roads/bridges interdict the road bonus/path
+- **Unit maintenance** — 0.02 ECO/tick per unsheltered unit; road-supplied units pay 50%; cut-off units pay 150%; units on friendly cities or forts exempt; no ECO = starvation damage
+- **City + capital production** (1 ECO/sec, 3 ECO/sec; build orders for Light/Heavy; cancel order)
+- **Healing** on friendly-controlled owned cities/forts only (0.5 HP/tick at 0.05 ECO/tick cost); road supply never enables healing
+- **Power projection** (additive linear-falloff; fort-aware: fort base=25, radius=6)
+- **Win conditions** (capture enemy capital OR hold ≥80% of cities for 30 consecutive seconds)
+- **Procedural maps** — `MapGenerator.Generate(seed)`: layered integer-noise elevation → rank-based land terrain assignment (plains/forest/foothill/mountain) → irregular major lowland basins + small inland lakes → mountain-water buffer enforcement → component-based tiny-water cleanup → saddle-point pass cutting through ridges → mountain-peak spine promotion along sufficiently large range interiors → one narrow river on 60×60 maps, starting in mountain country, meandering through lowlands, and flowing toward larger water bodies → city placement that keeps owned cities clustered near capitals → same-territory road networks only (no free road between enemy capitals) → BFS-based connectivity guarantee with `PunchPath` last resort
+- **Map balance scoring** — 4-axis `BalanceValidator` (path symmetry / terrain parity / choke points / connectivity), threshold ≥250/400, reject-and-retry up to 10 attempts with deterministic xorshift seed perturbation
+- **Road/bridge engineering** — selected unit + `B` enters road-build mode; hover previews the deterministic engineering path; click commits `BuildRoadCommand`; land segments cost 2 ECO/30 ticks; river bridges cost 8 ECO/90 ticks; water and mountain peaks are blocked
+- **Visual layer**: Teal/Coral palette, Inter fallback, terrain tones, drop shadows, borders, HP bars, star icons, stack fanning, hostile-territory ring, supply status rings, victory banner, fort diamonds (amber), road/bridge previews, build progress bars, capture HP bars
+
+Performance: **1.6 ms/tick avg** with 200 units on a 60×60 map. ~18× headroom under the 30 ms budget for 30 Hz sim.
+
+### Known design deviations from PLAN.md (intentional)
+
+- **Encirclement system**: built in Phase 1 but **still disabled** in `GameSim.Step`. Phase 3a replaced the instant-kill behavior with supply status, no-heal cutoffs, and maintenance pressure. `Encirclement.cs` remains as historical reference only unless rewritten around supply notifications.
+- **Fortifications pulled forward from Phase 3c to Phase 1.5**: built early based on user request. PLAN.md originally slated forts for Phase 3c with a 30-sec build time; we used 10 sec and added capture/raze mechanics.
+- **No-stacking** (one unit per tile): added based on playtest feedback.
+- **Healing on friendly cities**: not in original PLAN.md; added based on playtest.
+- **Tile size 32 px / window 1600×900**: chosen to fit 30×20 grid with HUD. Phase 3 introduces camera pan/zoom.
+- **Unit stats**: Light 60 HP / 8 dps / 4 tiles/sec / supply 1 / 10 ECO; Heavy 150 HP / 20 dps / 1.5 tiles/sec / supply 2 / 30 ECO.
+
+### Controls reference
+
+| Key/Action | Effect |
+|---|---|
+| Left-click | Select unit / Open city production menu |
+| Drag-select | Box-select units |
+| Right-click | Issue move order |
+| Q | Build Light (when city menu open) |
+| W | Build Heavy (when city menu open) |
+| F | Build fort at tile under cursor |
+| R | Raze fort at tile under cursor |
+| B | Enter road/bridge build mode for selected unit; hover previews path, left-click commits |
+| Tab | Switch active player (hot-seat) |
+| Esc | Clear selection / Close menu |
+| F11 | Toggle fullscreen |
+
+### Open issues / non-blockers carried forward
+
+1. **`godot-export` CI job fails** on Linux runner. Determinism CI on Mac+Windows is green. Non-blocker.
+2. **No Inter font bundled**. Theme.cs uses SystemFont fallback chain. Bundle `.ttf` in Phase 6.
+3. **Editorconfig analyzer warnings** — Chickensoft template default; harmless.
+4. **Stat tuning ongoing**. The stats above are starting points.
+
+### How to resume work cold
+
+```bash
+cd ~/Projects/war_game
+export PATH="$HOME/.dotnet:$PATH"   # .NET 8 SDK in user profile
+dotnet test Sim.Tests/              # confirm 158/158 still green
+dotnet build WarGame.csproj         # confirm Godot project builds
+open project.godot                  # or run via Godot.app, F5 to play
+```
+
+To add a new sim system:
+1. Add file under `Sim/Systems/`
+2. Wire into `GameSim.Step` in fixed order (Movement → Combat → CityCapture → FortConstruction → RoadConstruction → Production → PowerProjection → SupplyLines → Healing → Maintenance → WinConditions → [your system])
+3. If you add to `GameState`: bump `GameState.CurrentVersion`, update `StateSerializer.Write`, update the schema versions comment block in `GameState.cs`, re-pin the golden hash in `Sim.Tests/DeterminismTests.cs`
+4. Write xUnit tests in `Sim.Tests/`
+
+### Next session priorities (in order)
+
+1. **Phase 3b — Fog of War**: per-player tile visibility (Hidden / Explored / Visible). Vision radius from units (Light 5, Heavy 4) and cities (8). Renderer must filter on active-player visibility — adds complexity to TileOwner, supply, and unit rendering.
+2. **Phase 3a polish pass**: playtest supply pressure and tune maintenance multipliers / road build costs if cutoffs feel too weak or too punishing.
+3. **Phase 3d — Doctrines**: pre-match selection screen with Maneuver / Attrition / Combined Arms. Each modifies a few stats and unlocks one ability per PLAN.md §3.4.
+4. **Phase 3e — Larger Maps + Camera**: bump default to 80×80 (with 120×120 option). Camera pan/zoom already exists; add minimap and performance pass.
+5. **Fix `godot-export` CI** — drag a working version pin into `.github/workflows/build.yml`. Determinism CI is solid; binary builds just need a green action.
+
+### Phase 2 design notes (for posterity)
+
+- **Why integer noise, not simplex**: float ops aren't bit-identical across CPU/JIT pairs. `IntegerNoise.cs` uses a Fisher-Yates-shuffled 256-entry permutation table seeded from `SimRng`, with bilinear interpolation via integer-only Hermite smoothstep. Deterministic across Mac+Windows (the determinism CI verifies this).
+- **Why water is carved after land terrain**: early versions assigned the lowest terrain ranks as water. That produced statistical water, not geography: oceans became ruler-straight top/right bands and rivers became short drainage cuts. `MapGenerator` now assigns land by rank, then carves irregular lowland basins and smaller inland lakes. Full map-edge oceans are deferred until a better coast/continent model exists.
+- **Peaks are promoted as spines, not dots**: `MapGenerator` promotes medial-axis tiles of sufficiently large mountain components, so peaks read as ridgelines along the center of a range rather than isolated edge artifacts.
+- **Roads are internal logistics**: generated roads only connect cities owned by the same player. There is intentionally no paved road between both territories; later unit-built roads/bridges make cross-front engineering a player action.
+- **Rivers are distinct from lakes/coasts**: `TileType.River` is passable but slow and bad for defense. Rivers must be one tile wide, long enough to read as rivers, visibly touch mountain country at the source, avoid straight canal runs, and reach larger water bodies. Generated roads do not overwrite rivers; player-built engineering now converts river segments to `TileType.Bridge`.
+- **Startup territory is precomputed**: `Game._Ready()` calls `PowerProjection.Tick(ref _state)` after procgen initialization so the first rendered frame starts with authoritative contiguous ownership instead of an empty/one-tick-stale `TileOwner` buffer.
+- **`IntegerNoise` takes `SimRng` by ref** in its constructor. An earlier version took it by value, which (because `SimRng` is a struct) meant two noise instances built from the same outer rng got identical permutation tables — elevation and moisture noise were perfectly correlated rather than independent channels. Fixed during Phase 2 cleanup.
+- **Validator's path-symmetry axis** uses BFS distance, not Euclidean. The score drops smoothly from 100 (≤20% imbalance) to 0 (≥80% imbalance). Most generated maps land in the 70–95 range.
+- **Choke-point detection** samples three vertical seams (¼, ½, ¾ width) and counts narrow passable runs (≤2 tiles wide). Target is 2–6 chokes total across all seams. Maps with 0 chokes feel like open fields; >6 feel like mazes.
 
 ---
 
@@ -205,14 +373,16 @@ For Phases 0-5, all visuals are produced procedurally in code or via free icon s
 
 ### Map Tiles
 
-- **Plains** — no modifier
-- **Forest** — light units fight at +bonus, heavy at -penalty
-- **Mountain** — impassable to heavy, slow for light
-- **Water** — impassable
-- **Road** — speed bonus to all units, +supply throughput
-- **City** — produces units, supply node
-- **Capital** — like a city, but losing it = losing the game
-- **Fortification (built)** — +defense bonus to occupant, +power projection
+| Tile | Speed | Defense Multiplier | Notes |
+|---|---|---|---|
+| Plains | 1.0× | 1.00× (none) | Default |
+| Forest | 1.0× light, 0.5× heavy | 0.70× (30% reduction) | Cover from trees |
+| Mountain | 0.25× light, impassable heavy | 0.50× (50% reduction) | Extreme high-ground |
+| Water | impassable | — | Blocks all movement |
+| Road | 1.5× all | 1.10× (10% MORE damage) | Fast but exposed |
+| City | 1.0× | 0.60× (40% reduction) | Produces units, supply node |
+| Capital | 1.0× | 0.60× (40% reduction) | Like city; losing it = game over |
+| Fort | 1.0× | 0.45× (55% reduction) | ✅ IMPLEMENTED. Built via `BuildFortCommand`; 50 ECO, 10 sec build, capturable (80 HP), razeable, max 3/player |
 
 ### Economy
 
@@ -343,13 +513,23 @@ Each phase has a **goal**, **deliverables**, **acceptance criteria**, and **huma
 
 **Sub-phases (build and playtest one at a time, in this order):**
 
-#### 3a. Supply lines (1 week)
-- Each unit has a "supply path" to nearest connected friendly city
-- Path computed via flood fill on friendly-controlled tiles
-- Out-of-supply units lose HP per tick
-- Visualize supply paths in UI (toggleable)
+#### 3a. Supply lines — ✅ COMPLETE
+- `SupplyLines` runs after `PowerProjection` and before `Healing` / `Maintenance`
+- Owned cities, capitals, and forts seed supply
+- Friendly-controlled tiles carry normal supply
+- Roads and bridges carry road-assisted supply outside friendly territory when not blocked by enemy units
+- Enemy units standing on roads/bridges interdict that road supply path
+- Cut-off units cannot heal and pay 150% maintenance; road-supplied units pay 50% maintenance
+- Healing remains restricted to friendly-controlled owned city/fort shelter
 
-**Human checkpoint:** does cutting supply lines feel impactful? If not, adjust starvation rate.
+**Human checkpoint:** playtest whether supply interdiction feels impactful. Tune maintenance multipliers if cutoffs are too weak or too punishing.
+
+#### 3a.5 Road/bridge engineering — ✅ COMPLETE
+- `BuildRoadCommand(unit, target)` / `CancelRoadCommand(unit)`
+- Selected unit + `B` enters road-build mode; hover previews deterministic engineering path
+- Land road segments cost 2 ECO and 30 ticks; river bridge segments cost 8 ECO and 90 ticks
+- Mountain peaks and large water are blocked; forests/mountains are allowed but costly
+- Bridges render as darker tan and move/supply like roads
 
 #### 3b. Fog of war (3–4 days)
 - Tile visibility based on friendly unit/city vision radius
@@ -358,10 +538,15 @@ Each phase has a **goal**, **deliverables**, **acceptance criteria**, and **huma
 
 **Human checkpoint:** does FoW feel right at this map size, or are maps too big/small?
 
-#### 3c. Fortifications (3–4 days)
-- New command: `BuildFortification(tile, builderUnit)`
-- 30-second build time, costs ECO
-- Provides defense bonus + power projection while occupied
+#### 3c. Fortifications — ✅ PULLED FORWARD TO PHASE 1.5
+
+Fortifications were implemented early based on user request. See Phase 1.5 notes in Section 0.0. Summary:
+- `BuildFortCommand(tile)` / `RazeFortCommand(tile)` — no builder unit needed
+- 50 ECO cost, 10-second build (300 ticks), max 3 per player
+- 55% damage reduction (strongest in game), base-25/radius-6 projection, +2 supply
+- Capturable (80 HP), razeable (reverts tile to Plains)
+- Under-construction forts cancelled if territory is lost
+- Rendered as amber diamond shapes with build progress bars
 
 #### 3d. Doctrines (3–4 days)
 - Doctrine selection screen before match start
