@@ -31,6 +31,8 @@ public static class Theme
     public static readonly Color Road      = new("#D2B48C");   // warm sandy tone
     public static readonly Color Bridge    = new("#B88A5A");   // darker tan crossing
     public static readonly Color Fort      = new("#8B6914");   // dark amber/brown
+    public static readonly Color FogHidden = new("#020617");   // near-black unknown
+    public static readonly Color FogGrid   = new("#1E293B");   // subtle hidden tile grid
 
     // ----- UI -------------------------------------------------------------
     public static readonly Color HudText      = new("#E2E8F0");

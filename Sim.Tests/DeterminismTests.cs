@@ -34,9 +34,9 @@ public class DeterminismTests
         // Cross-platform canary. CI on macOS and Windows must produce this
         // exact value. If either runner reports a different value, the sim
         // has a non-deterministic path — find it before merging.
-        // v9 schema (Phase 3a: + supply state, road/bridge engineering,
-        // Bridge tile type, PendingRoads).
-        const string Expected = "2dd1ef52ea367fd3d0a71a1a1a9900463eb70f5faae521087571eb277440e1a3";
+        // v10 schema (Phase 3b: + per-player fog-of-war visibility and
+        // last-seen tile memory).
+        const string Expected = "ee7c1df3b3595d2a6541efac19ba8c6cb3933f772ae6f4ef919ac9b9d10935b1";
         Assert.True(
             hashA == Expected,
             $"determinism hash drifted. expected={Expected} actual={hashA}");

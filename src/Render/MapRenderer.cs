@@ -3,6 +3,7 @@ namespace WarGame.Render;
 using Godot;
 using System.Collections.Generic;
 using WarGame.Sim.State;
+using WarGame.Sim.Systems;
 
 // Pure draw helpers — no state of their own. All inputs come from
 // GameState (read-only). The renderer never writes to sim state; that
@@ -69,18 +70,21 @@ public static class MapRenderer
         => t == UnitType.Heavy ? UnitRadiusHeavy : UnitRadiusLight;
 
     public static void Draw(CanvasItem canvas, in GameState state, Vector2 origin)
+        => Draw(canvas, state, origin, PlayerId.None);
+
+    public static void Draw(CanvasItem canvas, in GameState state, Vector2 origin, PlayerId viewer)
     {
-        DrawTerrain(canvas, state, origin);
-        DrawTerritoryFill(canvas, state, origin);
-        DrawBorders(canvas, state, origin);
-        DrawCities(canvas, state, origin);
-        DrawPendingForts(canvas, state, origin);
-        DrawPendingRoads(canvas, state, origin);
-        DrawUnits(canvas, state, origin);
+        DrawTerrain(canvas, state, origin, viewer);
+        DrawTerritoryFill(canvas, state, origin, viewer);
+        DrawBorders(canvas, state, origin, viewer);
+        DrawCities(canvas, state, origin, viewer);
+        DrawPendingForts(canvas, state, origin, viewer);
+        DrawPendingRoads(canvas, state, origin, viewer);
+        DrawUnits(canvas, state, origin, viewer);
     }
 
     // -------- 4c) Pending road/bridge construction ----------------------
-    private static void DrawPendingRoads(CanvasItem canvas, in GameState state, Vector2 origin)
+    private static void DrawPendingRoads(CanvasItem canvas, in GameState state, Vector2 origin, PlayerId viewer)
     {
         if (state.PendingRoads is null || state.PendingRoads.Count == 0) return;
 
@@ -92,6 +96,7 @@ public static class MapRenderer
             {
                 int flat = r.Path[p];
                 int x = flat % state.Map.Width, y = flat / state.Map.Width;
+                if (!FogOfWar.IsVisible(state, viewer, x, y)) continue;
                 TileType t = state.Map.GetTileUnchecked(x, y);
                 Color c = WarGame.Sim.Systems.Pathfinding.IsBridgeTerrain(t) ? Theme.BridgePreview : Theme.RoadPreview;
                 c.A *= p == r.CurrentPathIndex ? 0.85f : 0.45f;
@@ -105,6 +110,7 @@ public static class MapRenderer
             {
                 int flat = r.Path[r.CurrentPathIndex];
                 int x = flat % state.Map.Width, y = flat / state.Map.Width;
+                if (!FogOfWar.IsVisible(state, viewer, x, y)) continue;
                 TileType t = state.Map.GetTileUnchecked(x, y);
                 int total = WarGame.Sim.Systems.RoadConstruction.BuildTicksFor(t);
                 float frac = 1f - Mathf.Clamp((float)r.TicksRemainingOnTile / total, 0f, 1f);
@@ -119,14 +125,22 @@ public static class MapRenderer
     }
 
     // -------- 1) Terrain backdrop ------------------------------------------
-    private static void DrawTerrain(CanvasItem canvas, in GameState state, Vector2 origin)
+    private static void DrawTerrain(CanvasItem canvas, in GameState state, Vector2 origin, PlayerId viewer)
     {
         for (int y = 0; y < state.Map.Height; y++)
         {
             for (int x = 0; x < state.Map.Width; x++)
             {
-                TileType t = state.Map.GetTileUnchecked(x, y);
-                Color baseColor = Theme.ForTile(t);
+                VisibilityState vis = FogOfWar.GetVisibility(state, viewer, x, y);
+                TileType t = vis == VisibilityState.Hidden
+                    ? TileType.Plains
+                    : FogOfWar.GetKnownTileType(state, viewer, x, y);
+                Color baseColor = vis switch
+                {
+                    VisibilityState.Hidden => Theme.FogHidden,
+                    VisibilityState.Explored => Dim(Theme.ForTile(t), 0.42f),
+                    _ => Theme.ForTile(t),
+                };
                 Vector2 tl = TileTopLeft(x, y, origin);
 
                 // Base fill.
@@ -135,12 +149,17 @@ public static class MapRenderer
 
                 // Subtle depth: 1-px top/left edge highlight and 1-px
                 // bottom/right edge shadow to complete the grid look.
-                Color highlight = Theme.ForTileEdgeHighlight(t);
-                highlight.A = 0.30f;
+                Color highlight = vis == VisibilityState.Hidden
+                    ? Theme.FogGrid
+                    : Theme.ForTileEdgeHighlight(t);
+                if (vis == VisibilityState.Explored) highlight = Dim(highlight, 0.45f);
+                highlight.A = vis == VisibilityState.Hidden ? 0.22f : 0.30f;
                 canvas.DrawLine(tl, tl + new Vector2(TilePx, 0), highlight, 1f); // Top
                 canvas.DrawLine(tl, tl + new Vector2(0, TilePx), highlight, 1f); // Left
 
-                Color shadow = new(0, 0, 0, 0.15f);
+                Color shadow = vis == VisibilityState.Hidden
+                    ? new Color(0, 0, 0, 0.32f)
+                    : new Color(0, 0, 0, vis == VisibilityState.Explored ? 0.24f : 0.15f);
                 Vector2 bl = tl + new Vector2(0, TilePx - 1);
                 canvas.DrawLine(bl, bl + new Vector2(TilePx, 0), shadow, 1f); // Bottom
                 Vector2 tr = tl + new Vector2(TilePx - 1, 0);
@@ -150,18 +169,22 @@ public static class MapRenderer
     }
 
     // -------- 2) Territory fill (tint each tile by its owner) ----------
-    private static void DrawTerritoryFill(CanvasItem canvas, in GameState state, Vector2 origin)
+    private static void DrawTerritoryFill(CanvasItem canvas, in GameState state, Vector2 origin, PlayerId viewer)
     {
-        if (state.TileOwner is null) return;
         int w = state.Map.Width;
         for (int y = 0; y < state.Map.Height; y++)
         {
             for (int x = 0; x < w; x++)
             {
-                var owner = (PlayerId)state.TileOwner[y * w + x];
+                VisibilityState vis = FogOfWar.GetVisibility(state, viewer, x, y);
+                if (vis == VisibilityState.Hidden) continue;
+
+                var owner = FogOfWar.GetKnownTileOwner(state, viewer, x, y);
                 if (owner == PlayerId.None) continue;
                 Color tint = Theme.ForPlayer(owner);
-                tint.A = Theme.TerritoryFillAlpha;
+                tint.A = vis == VisibilityState.Explored
+                    ? Theme.TerritoryFillAlpha * 0.45f
+                    : Theme.TerritoryFillAlpha;
                 Rect2 r = new(TileTopLeft(x, y, origin), new Vector2(TilePx, TilePx));
                 canvas.DrawRect(r, tint);
             }
@@ -169,44 +192,52 @@ public static class MapRenderer
     }
 
     // -------- 3) Border edges between owners ---------------------------
-    private static void DrawBorders(CanvasItem canvas, in GameState state, Vector2 origin)
+    private static void DrawBorders(CanvasItem canvas, in GameState state, Vector2 origin, PlayerId viewer)
     {
-        if (state.TileOwner is null) return;
         int w = state.Map.Width, h = state.Map.Height;
 
         for (int y = 0; y < h; y++)
         {
             for (int x = 0; x < w; x++)
             {
-                int self = state.TileOwner[y * w + x];
-                if (self == (int)PlayerId.None) continue;
-                Color edge = Theme.ForPlayer((PlayerId)self);
-                edge.A = Theme.BorderEdgeAlpha;
+                VisibilityState vis = FogOfWar.GetVisibility(state, viewer, x, y);
+                if (vis == VisibilityState.Hidden) continue;
+
+                PlayerId self = FogOfWar.GetKnownTileOwner(state, viewer, x, y);
+                if (self == PlayerId.None) continue;
+                Color edge = Theme.ForPlayer(self);
+                edge.A = vis == VisibilityState.Explored
+                    ? Theme.BorderEdgeAlpha * 0.45f
+                    : Theme.BorderEdgeAlpha;
 
                 Vector2 tl = TileTopLeft(x, y, origin);
                 // Right edge.
-                if (x + 1 < w && state.TileOwner[y * w + (x + 1)] != self)
+                if (!TryKnownOwner(state, viewer, x + 1, y, out PlayerId right) || right != self)
                     canvas.DrawLine(tl + new Vector2(TilePx, 0), tl + new Vector2(TilePx, TilePx), edge, 2f);
                 // Bottom edge.
-                if (y + 1 < h && state.TileOwner[(y + 1) * w + x] != self)
+                if (!TryKnownOwner(state, viewer, x, y + 1, out PlayerId down) || down != self)
                     canvas.DrawLine(tl + new Vector2(0, TilePx), tl + new Vector2(TilePx, TilePx), edge, 2f);
                 // Left edge (only when neighbor differs and isn't already
                 // covered by *its* right edge — avoid double draw).
-                if (x == 0 || state.TileOwner[y * w + (x - 1)] == (int)PlayerId.None)
+                if (!TryKnownOwner(state, viewer, x - 1, y, out PlayerId left) || left == PlayerId.None)
                     canvas.DrawLine(tl, tl + new Vector2(0, TilePx), edge, 2f);
                 // Top edge.
-                if (y == 0 || state.TileOwner[(y - 1) * w + x] == (int)PlayerId.None)
+                if (!TryKnownOwner(state, viewer, x, y - 1, out PlayerId up) || up == PlayerId.None)
                     canvas.DrawLine(tl, tl + new Vector2(TilePx, 0), edge, 2f);
             }
         }
     }
 
     // -------- 4) Cities & Forts -----------------------------------------
-    private static void DrawCities(CanvasItem canvas, in GameState state, Vector2 origin)
+    private static void DrawCities(CanvasItem canvas, in GameState state, Vector2 origin, PlayerId viewer)
     {
+        DrawExploredStructures(canvas, state, origin, viewer);
+
         for (int i = 0; i < state.Cities.Count; i++)
         {
             City c = state.Cities[i];
+            if (!FogOfWar.IsVisible(state, viewer, c.TileX, c.TileY)) continue;
+
             Vector2 center = TileCenter(c.TileX, c.TileY, origin);
             Color owner = Theme.ForPlayer(c.Owner);
 
@@ -276,13 +307,14 @@ public static class MapRenderer
     }
 
     // -------- 4b) Pending fort construction ghosts ----------------------
-    private static void DrawPendingForts(CanvasItem canvas, in GameState state, Vector2 origin)
+    private static void DrawPendingForts(CanvasItem canvas, in GameState state, Vector2 origin, PlayerId viewer)
     {
         if (state.PendingForts is null || state.PendingForts.Count == 0) return;
 
         for (int i = 0; i < state.PendingForts.Count; i++)
         {
             var f = state.PendingForts[i];
+            if (!FogOfWar.IsVisible(state, viewer, f.TileX, f.TileY)) continue;
             Vector2 center = TileCenter(f.TileX, f.TileY, origin);
             Color ghost = Theme.ForPlayer(f.Owner);
             ghost.A = 0.4f; // Semi-transparent ghost
@@ -315,8 +347,46 @@ public static class MapRenderer
         canvas.DrawColoredPolygon(pts, color);
     }
 
+    private static void DrawExploredStructures(CanvasItem canvas, in GameState state, Vector2 origin, PlayerId viewer)
+    {
+        if (viewer == PlayerId.None) return;
+
+        int w = state.Map.Width;
+        for (int y = 0; y < state.Map.Height; y++)
+        {
+            for (int x = 0; x < w; x++)
+            {
+                if (FogOfWar.GetVisibility(state, viewer, x, y) != VisibilityState.Explored)
+                    continue;
+
+                TileType remembered = FogOfWar.GetKnownTileType(state, viewer, x, y);
+                if (!remembered.IsCityTile() && !remembered.IsFortTile()) continue;
+
+                PlayerId ownerId = FogOfWar.GetKnownTileOwner(state, viewer, x, y);
+                Color owner = Dim(Theme.ForPlayer(ownerId), 0.62f);
+                owner.A = 0.65f;
+
+                Vector2 center = TileCenter(x, y, origin);
+                if (remembered.IsFortTile())
+                {
+                    DrawDiamond(canvas, center, CityMarkerHalf * 0.72f, owner);
+                    continue;
+                }
+
+                float half = remembered == TileType.Capital ? CapitalMarkerHalf : CityMarkerHalf;
+                half *= 0.78f;
+                Rect2 marker = new(center - new Vector2(half, half),
+                                   new Vector2(half * 2, half * 2));
+                canvas.DrawRect(marker, owner);
+                if (remembered == TileType.Capital)
+                    DrawStar(canvas, center, half * 0.76f, half * 0.33f,
+                        Dim(Theme.ForPlayerDim(ownerId), 0.62f));
+            }
+        }
+    }
+
     // -------- 5) Units -------------------------------------------------
-    private static void DrawUnits(CanvasItem canvas, in GameState state, Vector2 origin)
+    private static void DrawUnits(CanvasItem canvas, in GameState state, Vector2 origin, PlayerId viewer)
     {
         // Pre-pass: build per-unit (idxInStack, stackSize) so units sharing a
         // tile + owner can be fanned in a small cluster. Without this, two
@@ -326,7 +396,7 @@ public static class MapRenderer
         if (n == 0) return;
         var stackIdx  = new int[n];
         var stackSize = new int[n];
-        ComputeStackLayout(state, stackIdx, stackSize);
+        ComputeStackLayout(state, viewer, stackIdx, stackSize);
 
         int w = state.Map.Width;
 
@@ -334,6 +404,7 @@ public static class MapRenderer
         {
             Unit u = state.Units[i];
             if (!u.IsAlive) continue;
+            if (!FogOfWar.IsVisible(state, viewer, u.TileX, u.TileY)) continue;
 
             Vector2 anchor = UnitVisualCenter(u, state.Map, origin);
             // Apply fan-out only for stationary stacks. Moving units keep
@@ -354,7 +425,9 @@ public static class MapRenderer
             // on a tile their player does not own. Doesn't affect gameplay
             // (Phase 3a's supply lines will), but it makes "danger zone"
             // legible at a glance.
-            if (state.TileOwner is not null
+            bool canShowFriendlyOperationalState = viewer == PlayerId.None || u.Owner == viewer;
+            if (canShowFriendlyOperationalState
+                && state.TileOwner is not null
                 && (uint)u.TileX < (uint)state.Map.Width
                 && (uint)u.TileY < (uint)state.Map.Height)
             {
@@ -366,18 +439,21 @@ public static class MapRenderer
                 }
             }
 
-            SupplyStatus supply = WarGame.Sim.Systems.SupplyLines.GetUnitStatus(state, i);
-            if (supply == SupplyStatus.CutOff)
+            if (canShowFriendlyOperationalState)
             {
-                Color cut = Theme.HostileRing;
-                cut.A = 0.95f;
-                canvas.DrawArc(center, radius + 8f, 0, Mathf.Tau, 24, cut, 2.5f);
-            }
-            else if (supply == SupplyStatus.RoadSupplied)
-            {
-                Color road = Theme.Road;
-                road.A = 0.85f;
-                canvas.DrawArc(center, radius + 6f, 0, Mathf.Tau, 24, road, 2f);
+                SupplyStatus supply = WarGame.Sim.Systems.SupplyLines.GetUnitStatus(state, i);
+                if (supply == SupplyStatus.CutOff)
+                {
+                    Color cut = Theme.HostileRing;
+                    cut.A = 0.95f;
+                    canvas.DrawArc(center, radius + 8f, 0, Mathf.Tau, 24, cut, 2.5f);
+                }
+                else if (supply == SupplyStatus.RoadSupplied)
+                {
+                    Color road = Theme.Road;
+                    road.A = 0.85f;
+                    canvas.DrawArc(center, radius + 6f, 0, Mathf.Tau, 24, road, 2f);
+                }
             }
 
             // Drop shadow.
@@ -407,6 +483,7 @@ public static class MapRenderer
             Unit u = state.Units[i];
             if (!u.IsAlive) continue;
             if (u.Path is { Count: > 0 }) continue;
+            if (!FogOfWar.IsVisible(state, viewer, u.TileX, u.TileY)) continue;
 
             Vector2 anchor = TileCenter(u.TileX, u.TileY, origin);
             Vector2 badgeCenter = anchor + new Vector2(TilePx * 0.32f, -TilePx * 0.32f);
@@ -451,7 +528,7 @@ public static class MapRenderer
         return new Vector2(Mathf.Cos(a), Mathf.Sin(a)) * clusterR;
     }
 
-    private static void ComputeStackLayout(in GameState s, int[] outIdx, int[] outSize)
+    private static void ComputeStackLayout(in GameState s, PlayerId viewer, int[] outIdx, int[] outSize)
     {
         // Bucket by (tile, owner). We only count stationary units — moving
         // ones already have unique interpolated positions and don't need
@@ -463,6 +540,7 @@ public static class MapRenderer
             Unit u = s.Units[i];
             if (!u.IsAlive) continue;
             if (u.Path is { Count: > 0 }) continue;
+            if (!FogOfWar.IsVisible(s, viewer, u.TileX, u.TileY)) continue;
             long key = ((long)(byte)u.Owner << 48) | ((long)(uint)u.TileY << 24) | (uint)u.TileX;
             if (!buckets.TryGetValue(key, out var list))
                 buckets[key] = list = new List<int>();
@@ -490,6 +568,18 @@ public static class MapRenderer
         }
         canvas.DrawColoredPolygon(pts, color);
     }
+
+    private static bool TryKnownOwner(in GameState state, PlayerId viewer, int x, int y, out PlayerId owner)
+    {
+        owner = PlayerId.None;
+        if (!state.Map.InBounds(x, y)) return false;
+        if (FogOfWar.GetVisibility(state, viewer, x, y) == VisibilityState.Hidden) return false;
+        owner = FogOfWar.GetKnownTileOwner(state, viewer, x, y);
+        return true;
+    }
+
+    private static Color Dim(Color c, float factor)
+        => new(c.R * factor, c.G * factor, c.B * factor, c.A);
 
     private static void DrawStar(CanvasItem canvas, Vector2 center, float outerR, float innerR, Color color)
     {

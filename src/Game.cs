@@ -95,6 +95,7 @@ public partial class Game : Node2D
         // until the first sim tick runs.
         PowerProjection.Tick(ref _state);
         SupplyLines.Tick(ref _state);
+        FogOfWar.Tick(ref _state);
         _fontPrimary = Theme.BuildPrimaryFont();
         _fontSemiBold = Theme.BuildSemiBoldFont();
         RecalculateLayout();
@@ -226,7 +227,7 @@ public partial class Game : Node2D
         // Draw Map with Transform
         DrawSetTransform(_mapOrigin, 0f, new Vector2(MapZoom, MapZoom));
 
-        MapRenderer.Draw(this, _state, Vector2.Zero);
+        MapRenderer.Draw(this, _state, Vector2.Zero, ActivePlayer);
 
         // Road/bridge preview from B build mode.
         DrawRoadPreview();
@@ -243,6 +244,7 @@ public partial class Game : Node2D
             if ((uint)id >= (uint)_state.Units.Count) continue;
             Unit u = _state.Units[id];
             if (!u.IsAlive) continue;
+            if (!FogOfWar.IsVisible(_state, ActivePlayer, u.TileX, u.TileY)) continue;
             Vector2 c = MapRenderer.UnitVisualCenter(u, _state.Map, Vector2.Zero);
             float r = MapRenderer.UnitRadius(u.Type) + 4f;
             DrawArc(c, r, 0, Mathf.Tau, 32, Theme.SelectRing, 2f);
@@ -307,6 +309,7 @@ public partial class Game : Node2D
             if ((uint)id >= (uint)_state.Units.Count) continue;
             Unit u = _state.Units[id];
             if (!u.IsAlive) continue;
+            if (!FogOfWar.IsVisible(_state, ActivePlayer, u.TileX, u.TileY)) continue;
 
             Vector2 c = MapRenderer.UnitVisualCenter(u, _state.Map, Vector2.Zero);
             float frac = remaining / CombatFlashDuration; // 1 → 0
@@ -322,6 +325,7 @@ public partial class Game : Node2D
     {
         if (_moveMarkerLife <= 0f) return;
         if (_moveTargetX < 0 || _moveTargetY < 0) return;
+        if (!FogOfWar.IsKnown(_state, ActivePlayer, _moveTargetX, _moveTargetY)) return;
 
         Vector2 center = MapRenderer.TileCenter(_moveTargetX, _moveTargetY, Vector2.Zero);
         float frac = _moveMarkerLife / MoveMarkerDuration; // 1 → 0
@@ -344,6 +348,7 @@ public partial class Game : Node2D
         {
             int flat = _roadPreviewPath[i];
             int x = flat % _state.Map.Width, y = flat / _state.Map.Width;
+            if (!FogOfWar.IsVisible(_state, ActivePlayer, x, y)) continue;
             TileType t = _state.Map.GetTileUnchecked(x, y);
             Color c = !_roadPreviewValid
                 ? Theme.InvalidPreview
@@ -619,5 +624,8 @@ public partial class Game : Node2D
     public ref readonly GameState State => ref _state;
     public void EnqueueCommand(Command cmd) => _pendingCommands.Add(cmd);
     public void SwitchActivePlayer()
-        => ActivePlayer = ActivePlayer == PlayerId.Player1 ? PlayerId.Player2 : PlayerId.Player1;
+    {
+        ActivePlayer = ActivePlayer == PlayerId.Player1 ? PlayerId.Player2 : PlayerId.Player1;
+        QueueRedraw();
+    }
 }

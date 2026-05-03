@@ -191,6 +191,7 @@ public partial class InputController : Node
             Unit u = st.Units[i];
             if (!u.IsAlive) continue;
             if (u.Owner != Game.ActivePlayer) continue;
+            if (!FogOfWar.IsVisible(st, Game.ActivePlayer, u.TileX, u.TileY)) continue;
             Vector2 c = MapRenderer.UnitVisualCenter(u, st.Map, Vector2.Zero);
             float r = MapRenderer.UnitRadius(u.Type) + 6f;     // 6-px grab tolerance
             float distSq = c.DistanceSquaredTo(mapPos);
@@ -216,6 +217,7 @@ public partial class InputController : Node
             Unit u = st.Units[i];
             if (!u.IsAlive) continue;
             if (u.Owner != Game.ActivePlayer) continue;
+            if (!FogOfWar.IsVisible(st, Game.ActivePlayer, u.TileX, u.TileY)) continue;
             // Use visual center so moving units can be box-selected at their
             // rendered position, not their anchor tile. Matches single-click
             // hit-testing behavior.
@@ -230,6 +232,7 @@ public partial class InputController : Node
         var (tx, ty) = MapRenderer.ScreenToTile(Game.ScreenToMap(screenPos), Vector2.Zero);
         ref readonly GameState st = ref Game.State;
         if (!st.Map.InBounds(tx, ty)) return;
+        if (!FogOfWar.IsKnown(st, Game.ActivePlayer, tx, ty)) return;
 
         // Stable iteration order: ascending Id. Required for replay
         // determinism if multiple commands are issued in the same frame.
@@ -253,6 +256,7 @@ public partial class InputController : Node
         var (tx, ty) = MapRenderer.ScreenToTile(Game.ScreenToMap(screenPos), Vector2.Zero);
         ref readonly GameState st = ref Game.State;
         if (!st.Map.InBounds(tx, ty)) return false;
+        if (!FogOfWar.IsVisible(st, Game.ActivePlayer, tx, ty)) return false;
         if (st.Map.GetTileUnchecked(tx, ty).IsFortTile()) return false;
 
         for (int i = 0; i < st.Cities.Count; i++)
@@ -288,6 +292,11 @@ public partial class InputController : Node
             return;
         }
         City menuCity = Game.State.Cities[MenuCityId];
+        if (!FogOfWar.IsVisible(Game.State, Game.ActivePlayer, menuCity.TileX, menuCity.TileY))
+        {
+            CloseMenu();
+            return;
+        }
         if (Game.State.Map.GetTileUnchecked(menuCity.TileX, menuCity.TileY).IsFortTile())
         {
             CloseMenu();
@@ -408,6 +417,7 @@ public partial class InputController : Node
         var (tx, ty) = MapRenderer.ScreenToTile(Game.ScreenToMap(_mousePos), Vector2.Zero);
         ref readonly GameState st = ref Game.State;
         if (!st.Map.InBounds(tx, ty)) return;
+        if (!FogOfWar.IsVisible(st, Game.ActivePlayer, tx, ty)) return;
         if (st.Map.GetTileUnchecked(tx, ty).IsFortTile()) return;
 
         for (int i = 0; i < st.Cities.Count; i++)
@@ -521,8 +531,15 @@ public partial class InputController : Node
             Game.SetRoadPreview(new List<int>(), false);
             return;
         }
+        if (!FogOfWar.IsVisible(st, Game.ActivePlayer, tx, ty))
+        {
+            Game.SetRoadPreview(new List<int>(), false);
+            return;
+        }
 
         List<int> path = Pathfinding.FindRoadBuildPath(st.Map, u.TileX, u.TileY, tx, ty);
+        if (!RoadPathFullyVisible(st, path))
+            path.Clear();
         Game.SetRoadPreview(path, path.Count > 0);
     }
 
@@ -538,9 +555,11 @@ public partial class InputController : Node
         var (tx, ty) = MapRenderer.ScreenToTile(Game.ScreenToMap(screenPos), Vector2.Zero);
         ref readonly GameState st = ref Game.State;
         if (!st.Map.InBounds(tx, ty)) return;
+        if (!FogOfWar.IsVisible(st, Game.ActivePlayer, tx, ty)) return;
 
         Unit u = st.Units[unitId];
         List<int> path = Pathfinding.FindRoadBuildPath(st.Map, u.TileX, u.TileY, tx, ty);
+        if (!RoadPathFullyVisible(st, path)) return;
         if (path.Count == 0) return;
 
         Game.EnqueueCommand(new BuildRoadCommand(unitId, tx, ty)
@@ -559,6 +578,7 @@ public partial class InputController : Node
         var (tx, ty) = MapRenderer.ScreenToTile(mouseMapPos, Vector2.Zero);
         ref readonly GameState st = ref Game.State;
         if (!st.Map.InBounds(tx, ty)) return;
+        if (!FogOfWar.IsVisible(st, Game.ActivePlayer, tx, ty)) return;
 
         Game.EnqueueCommand(new BuildFortCommand(tx, ty)
         { PlayerId = (int)Game.ActivePlayer });
@@ -573,6 +593,7 @@ public partial class InputController : Node
         var (tx, ty) = MapRenderer.ScreenToTile(Game.ScreenToMap(_mousePos), Vector2.Zero);
         ref readonly GameState st = ref Game.State;
         if (!st.Map.InBounds(tx, ty)) return;
+        if (!FogOfWar.IsVisible(st, Game.ActivePlayer, tx, ty)) return;
 
         Game.EnqueueCommand(new RazeFortCommand(tx, ty)
         { PlayerId = (int)Game.ActivePlayer });
@@ -584,6 +605,11 @@ public partial class InputController : Node
         if ((uint)MenuCityId >= (uint)Game.State.Cities.Count) return;
 
         City c = Game.State.Cities[MenuCityId];
+        if (!FogOfWar.IsVisible(Game.State, Game.ActivePlayer, c.TileX, c.TileY))
+        {
+            CloseMenu();
+            return;
+        }
         if (Game.State.Map.GetTileUnchecked(c.TileX, c.TileY).IsFortTile())
         {
             CloseMenu();
@@ -605,6 +631,17 @@ public partial class InputController : Node
         Game.EnqueueCommand(new BuildUnitCommand(MenuCityId, type)
         { PlayerId = (int)Game.ActivePlayer });
         CloseMenu();
+    }
+
+    private bool RoadPathFullyVisible(in GameState st, List<int> path)
+    {
+        for (int i = 0; i < path.Count; i++)
+        {
+            int flat = path[i];
+            int x = flat % st.Map.Width, y = flat / st.Map.Width;
+            if (!FogOfWar.IsVisible(st, Game.ActivePlayer, x, y)) return false;
+        }
+        return true;
     }
 
     private static void ToggleFullscreen()

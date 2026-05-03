@@ -92,6 +92,22 @@ public static class StateSerializer
         if (s.UnitSupplyStatus is not null)
             foreach (byte b in s.UnitSupplyStatus) stream.WriteByte(b);
 
+        // Fog-of-war arrays.
+        int visibilityLen = s.TileVisibility is null ? 0 : s.TileVisibility.Length;
+        WriteI32(stream, visibilityLen);
+        if (s.TileVisibility is not null)
+            foreach (byte b in s.TileVisibility) stream.WriteByte(b);
+
+        int lastTileLen = s.LastSeenTileType is null ? 0 : s.LastSeenTileType.Length;
+        WriteI32(stream, lastTileLen);
+        if (s.LastSeenTileType is not null)
+            foreach (byte b in s.LastSeenTileType) stream.WriteByte(b);
+
+        int lastOwnerLen = s.LastSeenTileOwner is null ? 0 : s.LastSeenTileOwner.Length;
+        WriteI32(stream, lastOwnerLen);
+        if (s.LastSeenTileOwner is not null)
+            foreach (byte b in s.LastSeenTileOwner) stream.WriteByte(b);
+
         // Win state.
         stream.WriteByte((byte)s.Winner);
         int holdLen = s.CityHoldTicks is null ? 0 : s.CityHoldTicks.Length;

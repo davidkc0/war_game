@@ -4,7 +4,7 @@
 
 ---
 
-## 0.0 Current Status & Resume Guide *(updated 2026-05-02)*
+## 0.0 Current Status & Resume Guide *(updated 2026-05-03)*
 
 ### Where we are
 
@@ -18,7 +18,9 @@
 
 **Phase 3a / 3a.5 (Supply Lines + Road/Bridge Engineering): ✅ COMPLETE.** Supply now computes after power projection; friendly territory carries normal supply, roads/bridges carry road-assisted supply, enemy units interdict road supply, cut-off units pay higher maintenance and cannot heal, road-supplied units pay reduced maintenance, and selected units can build previewed roads/bridges with `B`.
 
-**Next up: Phase 3b (Fog of War).**
+**Phase 3b (Fog of War): ✅ COMPLETE.** Per-player tile visibility now tracks Hidden / Explored / Visible state, remembers last-seen terrain/ownership, filters rendering and hot-seat input by active player, hides enemy units outside vision, and prevents movement/build commands into black fog.
+
+**Next up: Phase 3a polish pass, then Phase 3d (Doctrines).**
 
 ### Repo layout (live at `~/Projects/war_game/`)
 
@@ -32,6 +34,7 @@ war_game/
     WarGame.Sim.csproj
     Math/      FP.cs, FPVec2.cs, SimRng.cs
     State/     GameState.cs, MapState.cs, TileType.cs, SupplyStatus.cs,
+               VisibilityState.cs,
                Unit.cs, City.cs, Player.cs, PlayerId.cs,
                UnitType.cs, UnitStats.cs, FortOrder.cs, RoadOrder.cs
     Commands/  Command.cs (MoveUnit, BuildUnit, BuildFort,
@@ -39,12 +42,13 @@ war_game/
     Systems/   Movement, Combat, Production, Healing,
                CityCapture, FortConstruction, Maintenance,
                PowerProjection, SupplyLines, RoadConstruction,
+               FogOfWar,
                WinConditions, Encirclement (legacy instant-kill disabled),
                Pathfinding (A*)
     Generation/ IntegerNoise.cs, MapGenerator.cs, BalanceValidator.cs
     GameSim.cs                ← per-tick orchestrator
     StateSerializer.cs        ← canonical hash/replay serializer
-  Sim.Tests/                 ← xUnit, runs via `dotnet test`, 164 tests
+  Sim.Tests/                 ← xUnit, runs via `dotnet test`, 172 tests
     WarGame.Sim.Tests.csproj
   src/                       ← Godot scene scripts
     Main.cs, Main.tscn        ← entry; switches to Game.tscn
@@ -59,11 +63,12 @@ war_game/
 
 ### Schema state
 
-`GameState.CurrentVersion = 9`. Schema history:
+`GameState.CurrentVersion = 10`. Schema history:
 - v1–v5: Phase 0–1 baseline
 - v7: City.CaptureHp (Advance Wars-style capture)
 - v8: PendingForts, Fort tile type, terrain defense, maintenance
 - v9: TileSupplyOwner, TileRoadSupplyOwner, UnitSupplyStatus, PendingRoads, Bridge tile type
+- v10: TileVisibility, LastSeenTileType, LastSeenTileOwner
 
 Determinism golden hash pinned in `Sim.Tests/DeterminismTests.cs`. Bump version + repin whenever the byte layout changes.
 
@@ -72,7 +77,7 @@ Determinism golden hash pinned in `Sim.Tests/DeterminismTests.cs`. Bump version 
 ```
 Movement → Combat → CityCapture → FortConstruction →
 RoadConstruction → Production → PowerProjection →
-SupplyLines → Healing → Maintenance → WinConditions
+SupplyLines → Healing → Maintenance → FogOfWar → WinConditions
 ```
 
 ### What's actually playable today
@@ -98,6 +103,7 @@ A hot-seat 1v1 RTS on a procedurally generated 60×60 map (`Sim/Generation/MapGe
 - **Procedural maps** — `MapGenerator.Generate(seed)`: layered integer-noise elevation → rank-based land terrain assignment (plains/forest/foothill/mountain) → irregular major lowland basins + small inland lakes → mountain-water buffer enforcement → component-based tiny-water cleanup → saddle-point pass cutting through ridges → mountain-peak spine promotion along sufficiently large range interiors → one narrow river on 60×60 maps, starting in mountain country, meandering through lowlands, and flowing toward larger water bodies → city placement that keeps owned cities clustered near capitals → same-territory road networks only (no free road between enemy capitals) → BFS-based connectivity guarantee with `PunchPath` last resort
 - **Map balance scoring** — 4-axis `BalanceValidator` (path symmetry / terrain parity / choke points / connectivity), threshold ≥250/400, reject-and-retry up to 10 attempts with deterministic xorshift seed perturbation
 - **Road/bridge engineering** — selected unit + `B` enters road-build mode; hover previews the deterministic engineering path; click commits `BuildRoadCommand`; land segments cost 2 ECO/30 ticks; bridges over rivers or 1-tile-wide waterways cost 8 ECO/90 ticks; broad water, mountain peaks, and skinny land causeways between water are blocked
+- **Fog of war** — each hot-seat player has separate Hidden / Explored / Visible tile state; friendly light units reveal radius 5, heavy units radius 4, and owned cities/capitals/forts radius 8; explored tiles show dim last-seen terrain/ownership/structures but no units; hidden tiles show no information
 - **Visual layer**: Teal/Coral palette, Inter fallback, terrain tones, drop shadows, borders, HP bars, star icons, stack fanning, hostile-territory ring, supply status rings, victory banner, fort diamonds (amber), road/bridge previews, build progress bars, capture HP bars
 
 Performance: **1.6 ms/tick avg** with 200 units on a 60×60 map. ~18× headroom under the 30 ms budget for 30 Hz sim.
@@ -139,24 +145,23 @@ Performance: **1.6 ms/tick avg** with 200 units on a 60×60 map. ~18× headroom 
 ```bash
 cd ~/Projects/war_game
 export PATH="$HOME/.dotnet:$PATH"   # .NET 8 SDK in user profile
-dotnet test Sim.Tests/              # confirm 164/164 still green
+dotnet test Sim.Tests/              # confirm 172/172 still green
 dotnet build WarGame.csproj         # confirm Godot project builds
 open project.godot                  # or run via Godot.app, F5 to play
 ```
 
 To add a new sim system:
 1. Add file under `Sim/Systems/`
-2. Wire into `GameSim.Step` in fixed order (Movement → Combat → CityCapture → FortConstruction → RoadConstruction → Production → PowerProjection → SupplyLines → Healing → Maintenance → WinConditions → [your system])
+2. Wire into `GameSim.Step` in fixed order (Movement → Combat → CityCapture → FortConstruction → RoadConstruction → Production → PowerProjection → SupplyLines → Healing → Maintenance → FogOfWar → WinConditions → [your system if it belongs after visibility])
 3. If you add to `GameState`: bump `GameState.CurrentVersion`, update `StateSerializer.Write`, update the schema versions comment block in `GameState.cs`, re-pin the golden hash in `Sim.Tests/DeterminismTests.cs`
 4. Write xUnit tests in `Sim.Tests/`
 
 ### Next session priorities (in order)
 
-1. **Phase 3b — Fog of War**: per-player tile visibility (Hidden / Explored / Visible). Vision radius from units (Light 5, Heavy 4) and cities (8). Renderer must filter on active-player visibility — adds complexity to TileOwner, supply, and unit rendering.
-2. **Phase 3a polish pass**: playtest supply pressure and tune maintenance multipliers / road build costs if cutoffs feel too weak or too punishing.
-3. **Phase 3d — Doctrines**: pre-match selection screen with Maneuver / Attrition / Combined Arms. Each modifies a few stats and unlocks one ability per PLAN.md §3.4.
-4. **Phase 3e — Larger Maps + Camera**: bump default to 80×80 (with 120×120 option). Camera pan/zoom already exists; add minimap and performance pass.
-5. **Fix `godot-export` CI** — drag a working version pin into `.github/workflows/build.yml`. Determinism CI is solid; binary builds just need a green action.
+1. **Phase 3a polish pass**: playtest supply/fog readability together and tune maintenance multipliers / road build costs if cutoffs feel too weak or too punishing.
+2. **Phase 3d — Doctrines**: pre-match selection screen with Maneuver / Attrition / Combined Arms. Each modifies a few stats and unlocks one ability per PLAN.md §3.4.
+3. **Phase 3e — Larger Maps + Camera**: bump default to 80×80 (with 120×120 option). Camera pan/zoom already exists; add minimap and performance pass.
+4. **Fix `godot-export` CI** — drag a working version pin into `.github/workflows/build.yml`. Determinism CI is solid; binary builds just need a green action.
 
 ### Phase 2 design notes (for posterity)
 

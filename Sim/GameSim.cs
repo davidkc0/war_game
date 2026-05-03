@@ -70,7 +70,7 @@ public static class GameSim
         // 2) Tick systems in fixed order.
         //    Movement → Combat → CityCapture → FortConstruction →
         //    RoadConstruction → Production → PowerProjection →
-        //    SupplyLines → Healing → Maintenance → WinConditions
+        //    SupplyLines → Healing → Maintenance → FogOfWar → WinConditions
         Movement.Tick(ref s);
         Combat.Tick(ref s);
         CityCapture.Tick(ref s);
@@ -81,6 +81,7 @@ public static class GameSim
         SupplyLines.Tick(ref s);
         Healing.Tick(ref s);
         Maintenance.Tick(ref s);
+        FogOfWar.Tick(ref s);
         WinConditions.Tick(ref s);
 
         return s;
