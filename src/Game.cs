@@ -273,6 +273,10 @@ public partial class Game : Node2D
         // HUD bars.
         DrawHudTop();
         DrawHudBottom();
+        DrawSelectedUnitPanel();
+
+        if (_input is { PromotionMenuVisible: true })
+            DrawPromotionMenu(_input);
 
         // Production menu (on top of everything).
         if (_input is { MenuVisible: true })
@@ -405,13 +409,15 @@ public partial class Game : Node2D
         DrawRect(panel, Theme.HudPanel);
         DrawRect(panel, faction, filled: false, width: 3f);
 
-        // Title — centered horizontally in the panel.
-        Vector2 titlePos = new(panel.Position.X + panel.Size.X * 0.5f, panel.Position.Y + 90);
+        // DrawString's centered alignment centers within the width starting
+        // at Position.X; passing the panel midpoint shifts text half a panel
+        // too far right.
+        Vector2 titlePos = new(panel.Position.X, panel.Position.Y + 90);
         DrawString(_fontSemiBold, titlePos,
             label, HorizontalAlignment.Center, (int)panel.Size.X, titleSize, faction);
 
         // Subline — also centered.
-        Vector2 subPos = new(panel.Position.X + panel.Size.X * 0.5f, panel.Position.Y + 150);
+        Vector2 subPos = new(panel.Position.X, panel.Position.Y + 150);
         DrawString(_fontPrimary, subPos,
             "B = Build Road · F = Build Fort · R = Raze Fort · Esc = Clear selection",
             HorizontalAlignment.Center, (int)panel.Size.X, subSize, Theme.HudTextDim);
@@ -429,11 +435,27 @@ public partial class Game : Node2D
         if (validCity && _state.Map.GetTileUnchecked(c.TileX, c.TileY).IsFortTile())
             validCity = false;
 
-        string title = !validCity
-            ? "Production"
-            : c.IsCapital ? "⬥ Capital" : "⬥ City";
+        string title = !validCity ? "Production" : c.DisplayName;
         DrawString(_fontSemiBold, ic.MenuRect.Position + new Vector2(12, 22),
-            title, HorizontalAlignment.Left, -1, 14, Theme.HudText);
+            title, HorizontalAlignment.Left, 150, 14, Theme.HudText);
+
+        if (validCity)
+        {
+            DrawRect(ic.MenuEditNameButtonRect, Theme.HudPanelEdge, filled: false, width: 1f);
+            DrawString(_fontPrimary, ic.MenuEditNameButtonRect.Position + new Vector2(8, 16),
+                "E", HorizontalAlignment.Left, -1, 12, Theme.HudTextDim);
+        }
+
+        float contentY = ic.RenameMode ? 36f : 0f;
+        if (validCity && ic.RenameMode)
+        {
+            DrawRect(ic.MenuNameInputRect, Theme.HudPanel, filled: true);
+            DrawRect(ic.MenuNameInputRect, Theme.SelectRing, filled: false, width: 1f);
+            string draft = string.IsNullOrEmpty(ic.RenameDraft) ? "Enter city name" : ic.RenameDraft;
+            Color draftColor = string.IsNullOrEmpty(ic.RenameDraft) ? Theme.HudTextDim : Theme.HudText;
+            DrawString(_fontPrimary, ic.MenuNameInputRect.Position + new Vector2(8, 18),
+                draft, HorizontalAlignment.Left, (int)ic.MenuNameInputRect.Size.X - 16, 13, draftColor);
+        }
 
         if (validCity && c.IsProducing)
         {
@@ -454,12 +476,12 @@ public partial class Game : Node2D
 
             // Progress label.
             string label = $"Building {type}   {(int)(frac * 100f)}%";
-            DrawString(_fontPrimary, ic.MenuRect.Position + new Vector2(12, 50),
+            DrawString(_fontPrimary, ic.MenuRect.Position + new Vector2(12, 50 + contentY),
                 label, HorizontalAlignment.Left, -1, 13, Theme.HudText);
 
             // Progress bar.
             float barW = ic.MenuRect.Size.X - 24f;
-            Vector2 barTl = ic.MenuRect.Position + new Vector2(12, 60);
+            Vector2 barTl = ic.MenuRect.Position + new Vector2(12, 60 + contentY);
             DrawRect(new Rect2(barTl, new Vector2(barW, 8)), Theme.ProgressBarBg);
             DrawRect(new Rect2(barTl, new Vector2(barW * frac, 8)), Theme.ForPlayer(c.Owner));
 
@@ -499,6 +521,153 @@ public partial class Game : Node2D
         DrawString(_fontPrimary, r.Position + new Vector2(10, 21),
             label, HorizontalAlignment.Left, -1, 13, text);
     }
+
+    private void DrawSelectedUnitPanel()
+    {
+        if (SelectedUnitIds.Count != 1) return;
+        int unitId = -1;
+        foreach (int id in SelectedUnitIds) { unitId = id; break; }
+        if ((uint)unitId >= (uint)_state.Units.Count) return;
+
+        Unit u = _state.Units[unitId];
+        if (!u.IsAlive || u.Owner != ActivePlayer) return;
+        if (!FogOfWar.IsVisible(_state, ActivePlayer, u.TileX, u.TileY)) return;
+
+        const float w = 380f;
+        const float h = 104f;
+        float y = _viewportSize.Y - 36f - h - 10f;
+        var panel = new Rect2(new Vector2(12, y), new Vector2(w, h));
+        DrawRect(panel, Theme.MenuBg);
+        DrawRect(panel, Theme.MenuBorder, filled: false, width: 1f);
+
+        Color faction = Theme.ForPlayer(u.Owner);
+        DrawCircle(panel.Position + new Vector2(18, 21), 5f, faction);
+        string title = $"{u.Type} #{u.Id}   Rank {u.Rank}";
+        DrawString(_fontSemiBold, panel.Position + new Vector2(30, 25),
+            title, HorizontalAlignment.Left, -1, 14, Theme.HudText);
+
+        int hp = Mathf.Max(0, u.Hp.ToInt());
+        int maxHp = UnitStats.MaxHp(u.Type).ToInt();
+        string supply = SupplyLines.GetUnitStatus(_state, unitId).ToString();
+        DrawString(_fontPrimary, panel.Position + new Vector2(12, 48),
+            $"HP {hp}/{maxHp}   {XpProgressText(u)}   Supply: {supply}",
+            HorizontalAlignment.Left, -1, 12, Theme.HudText);
+
+        string perks = PerksText(u);
+        DrawString(_fontPrimary, panel.Position + new Vector2(12, 70),
+            string.IsNullOrEmpty(perks) ? "Perks: none" : $"Perks: {perks}",
+            HorizontalAlignment.Left, (int)w - 24, 12, Theme.HudTextDim);
+
+        if (u.PromotionPoints > 0)
+        {
+            DrawString(_fontSemiBold, panel.Position + new Vector2(12, 92),
+                $"Promotion ready [{u.PromotionPoints}]   Press P",
+                HorizontalAlignment.Left, -1, 12, Theme.SelectRing);
+        }
+    }
+
+    private void DrawPromotionMenu(InputController ic)
+    {
+        if ((uint)ic.PromotionUnitId >= (uint)_state.Units.Count) return;
+        Unit u = _state.Units[ic.PromotionUnitId];
+        if (!u.IsAlive) return;
+
+        DrawRect(ic.PromotionMenuRect, Theme.MenuBg);
+        DrawRect(ic.PromotionMenuRect, Theme.MenuBorder, filled: false, width: 1f);
+
+        DrawString(_fontSemiBold, ic.PromotionMenuRect.Position + new Vector2(12, 24),
+            $"Promote {u.Type} #{u.Id}", HorizontalAlignment.Left, -1, 14, Theme.HudText);
+
+        byte[] perks = PromotionPerksFor(u.Type);
+        for (int i = 0; i < ic.PromotionPerkButtonRects.Length; i++)
+        {
+            byte perkId = perks[i];
+            Rect2 r = ic.PromotionPerkButtonRects[i];
+            bool taken = HasPerk(u, perkId);
+
+            Color bg = Theme.HudPanel;
+            bg.A = taken ? 0.32f : 0.62f;
+            Color edge = taken ? Theme.HudPanelEdge : Theme.SelectRing;
+            DrawRect(r, bg);
+            DrawRect(r, edge, filled: false, width: 1f);
+
+            Color nameColor = taken ? Theme.HudTextDim : Theme.HudText;
+            DrawString(_fontSemiBold, r.Position + new Vector2(8, 14),
+                UnitProgression.PerkName(perkId),
+                HorizontalAlignment.Left, 105, 12, nameColor);
+            DrawString(_fontPrimary, r.Position + new Vector2(112, 14),
+                taken ? "taken" : PromotionEffectText(perkId),
+                HorizontalAlignment.Left, (int)r.Size.X - 120, 11,
+                taken ? Theme.HudTextDim : Theme.HudText);
+        }
+    }
+
+    private static string XpProgressText(in Unit u)
+    {
+        if (u.Rank >= UnitProgression.MaxRank)
+            return $"XP {RawToInt(u.XpRaw)} max";
+
+        long prev = u.Rank switch
+        {
+            <= 1 => 0,
+            2 => UnitProgression.Rank2Xp.Raw,
+            3 => UnitProgression.Rank3Xp.Raw,
+            _ => UnitProgression.Rank4Xp.Raw,
+        };
+        long next = UnitProgression.CurrentRankThreshold(u).Raw;
+        return $"XP {RawToInt(u.XpRaw - prev)}/{RawToInt(next - prev)}";
+    }
+
+    private static int RawToInt(long raw) => (int)(raw >> FP.FractionalBits);
+
+    private static string PerksText(in Unit u)
+    {
+        byte[] perks = PromotionPerksFor(u.Type);
+        var names = new List<string>();
+        for (int i = 0; i < perks.Length; i++)
+            if (HasPerk(u, perks[i])) names.Add(UnitProgression.PerkName(perks[i]));
+        return string.Join(", ", names);
+    }
+
+    private static byte[] PromotionPerksFor(UnitType type) => type == UnitType.Heavy
+        ? new byte[]
+        {
+            (byte)UnitPerk.HeavyPlating,
+            (byte)UnitPerk.HeavyHullDown,
+            (byte)UnitPerk.HeavyGunnery,
+            (byte)UnitPerk.HeavyBreacher,
+            (byte)UnitPerk.HeavyStabilizers,
+            (byte)UnitPerk.HeavySpotterCrew,
+        }
+        : new byte[]
+        {
+            (byte)UnitPerk.LightOptics,
+            (byte)UnitPerk.LightPathfinder,
+            (byte)UnitPerk.LightQuickMarch,
+            (byte)UnitPerk.LightRoadRunner,
+            (byte)UnitPerk.LightPackTactics,
+            (byte)UnitPerk.LightScreenLine,
+        };
+
+    private static bool HasPerk(in Unit u, byte perkId)
+        => (u.PerkMask & (1u << (perkId - 1))) != 0;
+
+    private static string PromotionEffectText(byte perkId) => ((UnitPerk)perkId) switch
+    {
+        UnitPerk.LightOptics => "+1 vision",
+        UnitPerk.LightPathfinder => "better rough speed",
+        UnitPerk.LightQuickMarch => "+10% land speed",
+        UnitPerk.LightRoadRunner => "faster roads",
+        UnitPerk.LightPackTactics => "+7% focus fire",
+        UnitPerk.LightScreenLine => "-7% adjacent defense",
+        UnitPerk.HeavyPlating => "-7% stationary damage",
+        UnitPerk.HeavyHullDown => "better cover defense",
+        UnitPerk.HeavyGunnery => "+8% stationary attack",
+        UnitPerk.HeavyBreacher => "+10% vs built tiles",
+        UnitPerk.HeavyStabilizers => "lower move penalty",
+        UnitPerk.HeavySpotterCrew => "+vision/support damage",
+        _ => "",
+    };
 
     // ---- HUD — Top bar ---------------------------------------------------
     private void DrawHudTop()
@@ -561,13 +730,8 @@ public partial class Game : Node2D
         Rect2 p1Bg = new(0, barY, halfW - 1, barH);
         DrawRect(p1Bg, Theme.P1BgTint);
 
-        FP eco1 = _state.Players[(int)PlayerId.Player1].Eco;
-        int p1Units = CountPlayerUnits(PlayerId.Player1);
-        int p1Cities = CountPlayerCities(PlayerId.Player1);
-
         DrawCircle(new Vector2(16, barY + barH * 0.5f), 4, Theme.P1);
-        int p1Cut = CountCutOffUnits(PlayerId.Player1);
-        string p1Status = $"P1   ECO: {eco1.ToInt()}   Units: {p1Units}   Cut off: {p1Cut}   Cities: {p1Cities}";
+        string p1Status = HudStatusFor(PlayerId.Player1);
         DrawString(_fontPrimary, new Vector2(28, barY + 23), p1Status,
             HorizontalAlignment.Left, -1, bodySize, Theme.HudText);
 
@@ -575,15 +739,22 @@ public partial class Game : Node2D
         Rect2 p2Bg = new(halfW + 1, barY, halfW - 1, barH);
         DrawRect(p2Bg, Theme.P2BgTint);
 
-        FP eco2 = _state.Players[(int)PlayerId.Player2].Eco;
-        int p2Units = CountPlayerUnits(PlayerId.Player2);
-        int p2Cities = CountPlayerCities(PlayerId.Player2);
-
         DrawCircle(new Vector2(halfW + 16, barY + barH * 0.5f), 4, Theme.P2);
-        int p2Cut = CountCutOffUnits(PlayerId.Player2);
-        string p2Status = $"P2   ECO: {eco2.ToInt()}   Units: {p2Units}   Cut off: {p2Cut}   Cities: {p2Cities}";
+        string p2Status = HudStatusFor(PlayerId.Player2);
         DrawString(_fontPrimary, new Vector2(halfW + 28, barY + 23), p2Status,
             HorizontalAlignment.Left, -1, bodySize, Theme.HudText);
+    }
+
+    private string HudStatusFor(PlayerId p)
+    {
+        string label = p == PlayerId.Player1 ? "P1" : "P2";
+        if (p == ActivePlayer)
+        {
+            FP eco = _state.Players[(int)p].Eco;
+            return $"{label}   ECO: {eco.ToInt()}   Units: {CountPlayerUnits(p)}   Cut off: {CountCutOffUnits(p)}   Cities: {CountPlayerCities(p)}";
+        }
+
+        return $"{label}   ECO: ?   Visible units: {CountVisibleUnits(p)}   Cut off: ?   Known cities: {CountKnownCities(p)}";
     }
 
     private int CountPlayerUnits(PlayerId p)
@@ -603,6 +774,31 @@ public partial class Game : Node2D
             if (c.Owner != p) continue;
             if (_state.Map.GetTileUnchecked(c.TileX, c.TileY).IsFortTile()) continue;
             count++;
+        }
+        return count;
+    }
+
+    private int CountVisibleUnits(PlayerId p)
+    {
+        int count = 0;
+        for (int i = 0; i < _state.Units.Count; i++)
+        {
+            Unit u = _state.Units[i];
+            if (!u.IsAlive || u.Owner != p) continue;
+            if (FogOfWar.IsVisible(_state, ActivePlayer, u.TileX, u.TileY)) count++;
+        }
+        return count;
+    }
+
+    private int CountKnownCities(PlayerId p)
+    {
+        int count = 0;
+        for (int i = 0; i < _state.Cities.Count; i++)
+        {
+            City c = _state.Cities[i];
+            if (_state.Map.GetTileUnchecked(c.TileX, c.TileY).IsFortTile()) continue;
+            if (!FogOfWar.IsKnown(_state, ActivePlayer, c.TileX, c.TileY)) continue;
+            if (FogOfWar.GetKnownTileOwner(_state, ActivePlayer, c.TileX, c.TileY) == p) count++;
         }
         return count;
     }

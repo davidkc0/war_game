@@ -24,6 +24,7 @@ public static class Pathfinding
     // pairs; if costs explode, the priority encoding below could overflow.
     public const int CostPlains   = 12;
     public const int CostRoad     = 8;       // 12 / 1.5
+    public const int CostWater    = 48;      // broad water = quarter speed
     public const int CostRiver    = 36;      // 1/3 speed crossing
     public const int CostForestH  = 24;      // heavy in forest = half speed
     public const int CostMountainL = 48;     // light in mountain = quarter speed
@@ -131,6 +132,7 @@ public static class Pathfinding
     {
         TileType.Road => CostRoad,
         TileType.Bridge => CostRoad,
+        TileType.Water => CostWater,
         TileType.River => CostRiver,
         TileType.Forest => isHeavyUnit ? CostForestH : CostPlains,
         TileType.Mountain => isHeavyUnit ? int.MaxValue : CostMountainL, // heavy filtered earlier
@@ -238,15 +240,15 @@ public static class Pathfinding
         TileType to = map.GetTileUnchecked(toX, toY);
 
         if (!IsEngineeringTileCandidate(map, toX, toY)) return false;
-        if (IsWaterway(from) && IsWaterway(to)) return false;
+        if (TerrainRules.IsWaterway(from) && TerrainRules.IsWaterway(to)) return false;
 
-        if (IsWaterway(to))
+        if (TerrainRules.IsWaterway(to))
         {
             int dx = toX - fromX, dy = toY - fromY;
             int farX = toX + dx, farY = toY + dy;
             if (!map.InBounds(farX, farY)) return false;
             TileType far = map.GetTileUnchecked(farX, farY);
-            if (IsWaterway(far)) return false;
+            if (TerrainRules.IsWaterway(far)) return false;
             if (!IsEngineeringTileCandidate(map, farX, farY)) return false;
             return !IsNewRoadCauseway(map, farX, farY, far);
         }
@@ -260,41 +262,15 @@ public static class Pathfinding
     {
         TileType t = map.GetTileUnchecked(x, y);
         if (!IsEngineeringPassable(t)) return false;
-        if (IsWaterway(t))
-            return IsOneTileWaterway(map, x, y);
-        return !IsNewRoadCauseway(map, x, y, t);
-    }
-
-    private static bool IsWaterway(TileType t) => t is TileType.Water or TileType.River;
-
-    private static bool IsOneTileWaterway(MapState map, int x, int y)
-    {
-        bool eastWestLand = IsLandForBridgeEnd(map, x - 1, y) && IsLandForBridgeEnd(map, x + 1, y);
-        bool northSouthLand = IsLandForBridgeEnd(map, x, y - 1) && IsLandForBridgeEnd(map, x, y + 1);
-        return eastWestLand || northSouthLand;
-    }
-
-    private static bool IsLandForBridgeEnd(MapState map, int x, int y)
-    {
-        if (!map.InBounds(x, y)) return false;
-        TileType t = map.GetTileUnchecked(x, y);
-        if (IsWaterway(t)) return false;
-        if (!IsEngineeringPassable(t)) return false;
+        if (TerrainRules.IsWaterway(t))
+            return TerrainRules.IsOneTileWaterway(map, x, y);
         return !IsNewRoadCauseway(map, x, y, t);
     }
 
     private static bool IsNewRoadCauseway(MapState map, int x, int y, TileType t)
     {
         if (t is TileType.Road or TileType.Bridge) return false;
-        if (IsWaterway(t)) return false;
-
-        bool waterNorth = IsWaterwayAt(map, x, y - 1);
-        bool waterSouth = IsWaterwayAt(map, x, y + 1);
-        bool waterWest = IsWaterwayAt(map, x - 1, y);
-        bool waterEast = IsWaterwayAt(map, x + 1, y);
-        return (waterNorth && waterSouth) || (waterWest && waterEast);
+        if (TerrainRules.IsWaterway(t)) return false;
+        return TerrainRules.IsNarrowLandCauseway(map, x, y);
     }
-
-    private static bool IsWaterwayAt(MapState map, int x, int y)
-        => map.InBounds(x, y) && IsWaterway(map.GetTileUnchecked(x, y));
 }

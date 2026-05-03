@@ -88,6 +88,7 @@ public static class SupplyLines
                 int nIdx = ny * w + nx;
                 if (normalVisited[nIdx]) continue;
                 if (s.TileOwner is null || (PlayerId)s.TileOwner[nIdx] != owner) continue;
+                if (TerrainRules.IsBroadWater(s.Map, nx, ny)) continue;
                 normalVisited[nIdx] = true;
                 s.TileSupplyOwner[nIdx] = (byte)owner;
                 normalQueue.Enqueue(nIdx);
@@ -117,6 +118,7 @@ public static class SupplyLines
 
                 TileType t = s.Map.GetTileUnchecked(nx, ny);
                 bool friendly = s.TileOwner is not null && (PlayerId)s.TileOwner[nIdx] == owner;
+                if (friendly && TerrainRules.IsBroadWater(s.Map, nx, ny)) friendly = false;
                 bool road = IsRoadSupplyTile(t);
                 bool roadOpen = road && !IsEnemyRoadBlocker(s, owner, nIdx);
 

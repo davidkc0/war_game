@@ -29,8 +29,6 @@ public static class Combat
 {
     // +15% damage per additional friendly unit attacking the same target.
     private static readonly FP ConcentrationBonusPerAlly = FP.FromInt(15) / FP.FromInt(100);
-    // Moving attackers deal 15% less damage.
-    private static readonly FP MovingAttackerPenalty = FP.FromInt(85) / FP.FromInt(100);
 
     public static void Tick(ref GameState s)
     {
@@ -76,6 +74,7 @@ public static class Combat
             if (targetId < 0) continue;
             ref Unit attacker = ref units[i];
             ref Unit target = ref units[targetId];
+            if (!attacker.IsAlive || !target.IsAlive) continue;
 
             FP baseDmg = UnitStats.DamagePerTick(attacker.Type);
 
@@ -83,17 +82,23 @@ public static class Combat
             int allies = targetCount[targetId];
             FP multiplier = FP.One + ConcentrationBonusPerAlly * FP.FromInt(allies - 1);
             FP dmg = baseDmg * multiplier;
+            dmg = dmg * UnitProgression.DamageMultiplier(s, i, targetId, allies);
 
             // 2) Attacker penalty: moving units deal less damage.
-            if (attacker.IsMoving)
-                dmg = dmg * MovingAttackerPenalty;
+            dmg = dmg * UnitProgression.MovingAttackerMultiplier(attacker);
 
-            // 3) Terrain defense: the defender's tile reduces incoming damage.
+            // 3) Terrain/unit defense: the defender's tile and perks reduce
+            // or increase incoming damage.
             TileType defenderTile = s.Map.GetTileUnchecked(target.TileX, target.TileY);
             FP defenseMul = FP.FromRaw(defenderTile.DefenseMultiplierRaw());
-            dmg = dmg * defenseMul;
+            dmg = dmg * defenseMul * UnitProgression.IncomingDamageMultiplier(s, targetId);
 
+            FP targetHpBefore = target.Hp;
             target.Hp -= dmg;
+            FP actualDamage = dmg < targetHpBefore ? dmg : targetHpBefore;
+            UnitProgression.AwardXp(ref attacker, actualDamage);
+            if (targetHpBefore > FP.Zero && target.Hp <= FP.Zero)
+                UnitProgression.AwardXp(ref attacker, UnitProgression.KillBonusXp);
         }
 
         // Pass 3: clean up dead units' transient state.

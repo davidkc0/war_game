@@ -139,6 +139,54 @@ public class MovementTests
     }
 
     [Fact]
+    public void UnitsCanPathThroughBroadWater()
+    {
+        var s = GameState.Initial(seed: 4);
+        var b = new MapState.Builder(6, 1);
+        b.Set(2, 0, TileType.Water);
+        b.Set(3, 0, TileType.Water);
+        s.Map = b.Build();
+        s.Cities.Add(City.Create(0, 0, 0, PlayerId.Player1, isCapital: true));
+        s.Units.Add(Unit.Create(0, PlayerId.Player1, UnitType.Light, 0, 0));
+
+        s = GameSim.Step(s, new List<Command> {
+            new MoveUnitCommand(0, 5, 0) { PlayerId = (int)PlayerId.Player1 },
+        });
+
+        Assert.NotEmpty(s.Units[0].Path);
+        s = GameSim.StepN(s, 220);
+        Assert.Equal(5, s.Units[0].TileX);
+        Assert.Empty(s.Units[0].Path);
+    }
+
+    [Fact]
+    public void BroadWaterMovementIsSlowerThanPlains()
+    {
+        var plains = BuildStripWithLight(20, 0);
+
+        var water = GameState.Initial(seed: 5);
+        var b = new MapState.Builder(20, 1, TileType.Water);
+        b.Set(0, 0, TileType.Capital);
+        water.Map = b.Build();
+        water.Cities.Add(City.Create(0, 0, 0, PlayerId.Player1, isCapital: true));
+        water.Units.Add(Unit.Create(0, PlayerId.Player1, UnitType.Light, 0, 0));
+
+        var cmd = new List<Command> {
+            new MoveUnitCommand(0, 10, 0) { PlayerId = (int)PlayerId.Player1 },
+        };
+        plains = GameSim.Step(plains, cmd);
+        water = GameSim.Step(water, cmd);
+
+        for (int t = 0; t < 60; t++)
+        {
+            plains = GameSim.Step(plains, null);
+            water = GameSim.Step(water, null);
+        }
+
+        Assert.True(ResolvePosition(water, 0) < ResolvePosition(plains, 0));
+    }
+
+    [Fact]
     public void Heavy_CannotCrossMountain_PathDropped()
     {
         var s = GameState.Initial(seed: 1);

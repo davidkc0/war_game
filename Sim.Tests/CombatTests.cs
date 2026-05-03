@@ -229,6 +229,66 @@ public class ProductionTests
     }
 
     [Fact]
+    public void RenameCity_SanitizesAndStoresOwnedCityName()
+    {
+        var s = BuildEmpty(3, 3);
+        s.Cities.Add(City.Create(0, 1, 1, PlayerId.Player1, isCapital: false));
+
+        var cmd = new List<Commands.Command> {
+            new Commands.RenameCityCommand(0, "North-Bridge Outpost With Extra Text") { PlayerId = (int)PlayerId.Player1 },
+        };
+        s = GameSim.Step(s, cmd);
+
+        Assert.Equal("North-Bridge Outpost Wit", s.Cities[0].Name);
+        Assert.Equal("North-Bridge Outpost Wit", s.Cities[0].DisplayName);
+    }
+
+    [Fact]
+    public void RenameCity_EmptyNameResetsDefault()
+    {
+        var s = BuildEmpty(3, 3);
+        var city = City.Create(0, 1, 1, PlayerId.Player1, isCapital: false);
+        city.Name = "Old Name";
+        s.Cities.Add(city);
+
+        var cmd = new List<Commands.Command> {
+            new Commands.RenameCityCommand(0, "   ") { PlayerId = (int)PlayerId.Player1 },
+        };
+        s = GameSim.Step(s, cmd);
+
+        Assert.Null(s.Cities[0].Name);
+        Assert.Equal("City 1", s.Cities[0].DisplayName);
+    }
+
+    [Fact]
+    public void RenameCity_RejectsWrongOwnerAndForts()
+    {
+        var wrongOwner = BuildEmpty(3, 3);
+        wrongOwner.Cities.Add(City.Create(0, 1, 1, PlayerId.Player1, isCapital: false));
+        wrongOwner = GameSim.Step(wrongOwner, new List<Commands.Command> {
+            new Commands.RenameCityCommand(0, "Enemy Edit") { PlayerId = (int)PlayerId.Player2 },
+        });
+        Assert.Null(wrongOwner.Cities[0].Name);
+
+        var fort = BuildEmpty(3, 3);
+        fort.Map.SetTile(1, 1, TileType.Fort);
+        fort.Cities.Add(new City
+        {
+            Id = 0,
+            TileX = 1,
+            TileY = 1,
+            Owner = PlayerId.Player1,
+            OriginalOwner = PlayerId.Player1,
+            SupplyCapacity = FortConstruction.FortSupplyCapacity,
+            CaptureHp = FortConstruction.FortCaptureHp,
+        });
+        fort = GameSim.Step(fort, new List<Commands.Command> {
+            new Commands.RenameCityCommand(0, "Fort Edit") { PlayerId = (int)PlayerId.Player1 },
+        });
+        Assert.Null(fort.Cities[0].Name);
+    }
+
+    [Fact]
     public void Fort_DoesNotAccrueEco()
     {
         var s = BuildEmpty(3, 3);

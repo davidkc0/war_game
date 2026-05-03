@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using WarGame.Sim.Math;
 using WarGame.Sim.State;
+using WarGame.Sim.Systems;
 
 namespace WarGame.Sim.Generation;
 
@@ -134,31 +135,32 @@ public static class MapGenerator
         // reads as a visual artifact.
         CleanupIsolatedWater(builder, width, height);
 
-        // Step 7: Peaks are a property of mountain clusters, not raw height
-        // values. Promote interior ridge-spines before rivers are carved.
-        PromoteMountainPeaks(builder, elevation, width, height);
-
-        // Step 8: Place capitals and cities after water exists so candidate
+        // Step 7: Place capitals and cities after water exists so candidate
         // scoring can prefer coherent coastal settlement sites.
         var cities = PlaceCities(builder, elevation, width, height, ref rng);
 
-        // Step 9: Ensure all cities are land-reachable. If not, punch a
+        // Step 8: Ensure all cities are land-reachable. If not, punch a
         // plain trail as a last-resort connectivity repair; this does *not*
         // create a road between territories.
         EnsureConnectivity(builder, cities, width, height);
         CleanupIsolatedWater(builder, width, height);
-        DemoteExposedMountainPeaks(builder, width, height);
 
-        // Step 10: Rivers start in mountain ranges and flow downhill toward
+        // Step 9: Rivers start in mountain ranges and flow downhill toward
         // existing water bodies. They are generated after connectivity
         // repair so later path punching cannot sever their mouths.
         GenerateRivers(builder, elevation, width, height);
+        StabilizeAllCitySites(builder, cities, width, height);
 
-        // Step 11: Generate intra-territory road networks only after all
+        // Step 10: Generate intra-territory road networks only after all
         // terrain repair passes are done. Earlier versions laid roads first,
         // then punched connectivity paths later, which left some accepted
         // maps with no visible roads at all.
         GenerateRoads(builder, elevation, cities, width, height);
+
+        // Step 11: Peaks are rebuilt as the final terrain pass so they
+        // describe the mountain ranges that actually survived rivers,
+        // city-site cleanup, connectivity repairs, and generated roads.
+        RebuildMountainPeakSpines(builder, elevation, width, height);
 
         var map = builder.Build();
 
@@ -451,6 +453,7 @@ public static class MapGenerator
         var (c1x, c1y) = FindSuitableTile(temp, elev, 1, 1,
             CapitalEdgeMargin + 8, CapitalEdgeMargin + 8, w, h, ref rng);
         b.Set(c1x, c1y, TileType.Capital);
+        StabilizeCitySite(b, c1x, c1y, w, h);
         cities.Add(City.Create(0, c1x, c1y, PlayerId.Player1, isCapital: true));
 
         // Capital 2: southeast area.
@@ -458,6 +461,7 @@ public static class MapGenerator
             w - CapitalEdgeMargin - 8, h - CapitalEdgeMargin - 8,
             w - 1, h - 1, w, h, ref rng);
         b.Set(c2x, c2y, TileType.Capital);
+        StabilizeCitySite(b, c2x, c2y, w, h);
         cities.Add(City.Create(1, c2x, c2y, PlayerId.Player2, isCapital: true));
 
         // Player 1 cities: clustered around capital 1.
@@ -469,6 +473,7 @@ public static class MapGenerator
             var (cx, cy) = FindCitySpot(temp, elev, placed, c1x, c1y, 
                 c1x - 16, c1y - 16, c1x + 16, c1y + 16, w, h, ref rng);
             b.Set(cx, cy, TileType.City);
+            StabilizeCitySite(b, cx, cy, w, h);
             cities.Add(City.Create(cityId++, cx, cy, PlayerId.Player1, isCapital: false));
             placed.Add((cx, cy));
         }
@@ -479,11 +484,39 @@ public static class MapGenerator
             var (cx, cy) = FindCitySpot(temp, elev, placed, c2x, c2y, 
                 c2x - 16, c2y - 16, c2x + 16, c2y + 16, w, h, ref rng);
             b.Set(cx, cy, TileType.City);
+            StabilizeCitySite(b, cx, cy, w, h);
             cities.Add(City.Create(cityId++, cx, cy, PlayerId.Player2, isCapital: false));
             placed.Add((cx, cy));
         }
 
         return cities;
+    }
+
+    private static void StabilizeCitySite(MapState.Builder b, int cx, int cy, int w, int h)
+    {
+        for (int pass = 0; pass < 2; pass++)
+        {
+            var map = b.Build();
+            if (TerrainRules.HasStableCityFootprint(map, cx, cy)) return;
+
+            for (int oy = -1; oy <= 1; oy++)
+            {
+                for (int ox = -1; ox <= 1; ox++)
+                {
+                    int x = cx + ox, y = cy + oy;
+                    if ((uint)x >= (uint)w || (uint)y >= (uint)h) continue;
+                    TileType t = map.GetTileUnchecked(x, y);
+                    if (t is TileType.Water or TileType.River or TileType.Mountain or TileType.MountainPeak)
+                        b.Set(x, y, TileType.Plains);
+                }
+            }
+        }
+    }
+
+    private static void StabilizeAllCitySites(MapState.Builder b, List<City> cities, int w, int h)
+    {
+        for (int i = 0; i < cities.Count; i++)
+            StabilizeCitySite(b, cities[i].TileX, cities[i].TileY, w, h);
     }
 
     /// <summary>
@@ -510,6 +543,7 @@ public static class MapGenerator
             {
                 TileType t = map.GetTileUnchecked(x, y);
                 if (t != TileType.Plains && t != TileType.Forest) continue;
+                if (!TerrainRules.HasStableCityFootprint(map, x, y)) continue;
                 bool waterfront = IsAdjacentToWaterOrRiver(map, x, y);
                 if (t == TileType.Plains)
                 {
@@ -529,8 +563,10 @@ public static class MapGenerator
         if (plains.Count > 0) return plains[rng.NextInt(0, plains.Count)];
         if (forest.Count > 0) return forest[rng.NextInt(0, forest.Count)];
 
-        // Worst case: center of the bounding box.
-        return ((x0 + x1) / 2, (y0 + y1) / 2);
+        // Fallback: nearest stable land outside the preferred box. Returning
+        // the geometric center can place a capital on water or a one-tile
+        // isthmus, which then forces ugly connectivity scars.
+        return FindNearestStableCityTile(map, (x0 + x1) / 2, (y0 + y1) / 2, w, h);
     }
 
     /// <summary>
@@ -554,6 +590,7 @@ public static class MapGenerator
             {
                 TileType t = map.GetTileUnchecked(x, y);
                 if (t != TileType.Plains && t != TileType.Forest) continue;
+                if (!TerrainRules.HasStableCityFootprint(map, x, y)) continue;
 
                 // Enforce maximum Manhattan distance from the capital to guarantee contiguous territory.
                 int distToCap = System.Math.Abs(x - capX) + System.Math.Abs(y - capY);
@@ -590,6 +627,7 @@ public static class MapGenerator
             {
                 TileType t = map.GetTileUnchecked(x, y);
                 if (t != TileType.Plains && t != TileType.Forest) continue;
+                if (!TerrainRules.HasStableCityFootprint(map, x, y)) continue;
                 int distToCap = System.Math.Abs(x - capX) + System.Math.Abs(y - capY);
                 if (distToCap > 14) continue;
                 relaxed.Add((x, y));
@@ -617,6 +655,44 @@ public static class MapGenerator
             }
         }
         return candidates[best];
+    }
+
+    private static (int x, int y) FindNearestStableCityTile(MapState map, int centerX, int centerY, int w, int h)
+    {
+        int bestX = -1, bestY = -1, bestScore = int.MaxValue;
+        for (int y = 1; y < h - 1; y++)
+        {
+            for (int x = 1; x < w - 1; x++)
+            {
+                TileType t = map.GetTileUnchecked(x, y);
+                if (t != TileType.Plains && t != TileType.Forest) continue;
+                if (!TerrainRules.HasStableCityFootprint(map, x, y)) continue;
+
+                int score = (System.Math.Abs(x - centerX) + System.Math.Abs(y - centerY)) * 100 + y * 10 + x;
+                if (score >= bestScore) continue;
+                bestScore = score;
+                bestX = x;
+                bestY = y;
+            }
+        }
+
+        if (bestX >= 0) return (bestX, bestY);
+
+        for (int y = 1; y < h - 1; y++)
+        {
+            for (int x = 1; x < w - 1; x++)
+            {
+                TileType t = map.GetTileUnchecked(x, y);
+                if (t is not (TileType.Plains or TileType.Forest)) continue;
+                int score = (System.Math.Abs(x - centerX) + System.Math.Abs(y - centerY)) * 100 + y * 10 + x;
+                if (score >= bestScore) continue;
+                bestScore = score;
+                bestX = x;
+                bestY = y;
+            }
+        }
+
+        return bestX >= 0 ? (bestX, bestY) : (System.Math.Clamp(centerX, 1, w - 2), System.Math.Clamp(centerY, 1, h - 2));
     }
 
     private static bool IsAdjacentToWaterOrRiver(MapState map, int x, int y)
@@ -705,7 +781,8 @@ public static class MapGenerator
                 
                 int nIdx = ny * w + nx;
                 TileType t = tempMap.GetTileUnchecked(nx, ny);
-                if (t == TileType.Water || t == TileType.Mountain || t == TileType.MountainPeak) continue;
+                bool endpoint = nIdx == startIdx || nIdx == targetIdx;
+                if (!IsGeneratedRoadPassable(tempMap, nx, ny, t, endpoint)) continue;
                 
                 // Base cost is 10. Roads follow valleys/passes and never
                 // climb over mountains or peaks.
@@ -736,12 +813,21 @@ public static class MapGenerator
         {
             int cx = currPath % w, cy = currPath / w;
             TileType t = tempMap.GetTileUnchecked(cx, cy);
-            if (t != TileType.City && t != TileType.Capital && t != TileType.River)
+            if (t != TileType.City && t != TileType.Capital && t != TileType.River
+                && IsGeneratedRoadPassable(tempMap, cx, cy, t, endpoint: false))
             {
                 b.Set(cx, cy, TileType.Road);
             }
             currPath = prev[currPath];
         }
+    }
+
+    private static bool IsGeneratedRoadPassable(MapState map, int x, int y, TileType t, bool endpoint)
+    {
+        if (t is TileType.Water or TileType.Mountain or TileType.MountainPeak) return false;
+        if (endpoint || t is TileType.City or TileType.Capital or TileType.Road or TileType.River) return true;
+        if (TerrainRules.IsNarrowLandCauseway(map, x, y)) return false;
+        return TerrainRules.HasTwoByTwoLandFootprint(map, x, y);
     }
 
     /// <summary>
@@ -853,15 +939,14 @@ public static class MapGenerator
     }
 
     /// <summary>
-    /// Promote interior ridgelines per mountain range into peaks. Peaks are
-    /// chosen from the finalized mountain mask, not the raw elevation mask:
-    /// roads, passes, and connectivity cuts are already applied. Within each
-    /// sufficiently large mountain component, promote the medial-axis tiles
-    /// (farthest from the range edge) so peaks read as a spine rather than
-    /// one arbitrary white dot.
+    /// Final-pass peak rebuild. Peaks are not raw-height dots; they are the
+    /// connected high spine of each surviving mountain range. Running this
+    /// after roads/rivers/city cleanup prevents later terrain surgery from
+    /// leaving peak patches stranded on range edges.
     /// </summary>
-    private static void PromoteMountainPeaks(MapState.Builder b, int[] elev, int w, int h)
+    private static void RebuildMountainPeakSpines(MapState.Builder b, int[] elev, int w, int h)
     {
+        ClearExistingPeaks(b, w, h);
         var snapshot = b.Build();
         var visited = new bool[w * h];
         var component = new List<int>();
@@ -898,25 +983,65 @@ public static class MapGenerator
                 }
 
                 if (component.Count < 18) continue;
-                PromoteMountainSpine(b, snapshot, component, elev, w, h);
+                PromoteConnectedPeakSpine(b, snapshot, component, elev, w, h);
             }
         }
     }
 
-    private static void PromoteMountainSpine(MapState.Builder b, MapState map, List<int> component, int[] elev, int w, int h)
+    private static void ClearExistingPeaks(MapState.Builder b, int w, int h)
     {
-        var inComponent = new bool[w * h];
-        var dist = new int[w * h];
+        var map = b.Build();
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+                if (map.GetTileUnchecked(x, y) == TileType.MountainPeak)
+                    b.Set(x, y, TileType.Mountain);
+    }
+
+    private static void PromoteConnectedPeakSpine(MapState.Builder b, MapState map, List<int> component, int[] elev, int w, int h)
+    {
+        BuildMountainInteriorDistances(component, w, h, out bool[] inComponent, out int[] dist, out int maxDist);
+        if (maxDist < 1) return;
+
+        int minRidgeDist = maxDist <= 2 ? 1 : System.Math.Max(2, maxDist * 55 / 100);
+        var candidates = CollectPeakCandidates(map, component, dist, minRidgeDist);
+        if (candidates.Count < 2 && minRidgeDist > 1)
+        {
+            minRidgeDist--;
+            candidates = CollectPeakCandidates(map, component, dist, minRidgeDist);
+        }
+        if (candidates.Count < 2) return;
+
+        int seed = BestPeakSeed(candidates, dist, elev);
+        int a = BestPeakEndpoint(candidates, seed, dist, elev, w);
+        int c = BestPeakEndpoint(candidates, a, dist, elev, w);
+        if (a == c) return;
+
+        var path = FindPeakSpinePath(inComponent, dist, elev, minRidgeDist, a, c, w, h);
+        if (path.Count < 2 && minRidgeDist > 1)
+            path = FindPeakSpinePath(inComponent, dist, elev, minRidgeDist - 1, a, c, w, h);
+        if (path.Count < 2) return;
+
+        for (int i = 0; i < path.Count; i++)
+        {
+            int idx = path[i];
+            int x = idx % w, y = idx / w;
+            if (CountMountainLikeNeighbors8(map, x, y) < 4) continue;
+            b.Set(x, y, TileType.MountainPeak);
+        }
+    }
+
+    private static void BuildMountainInteriorDistances(List<int> component, int w, int h,
+        out bool[] inComponent, out int[] dist, out int maxDist)
+    {
+        inComponent = new bool[w * h];
+        dist = new int[w * h];
+        Array.Fill(dist, -1);
         var queue = new Queue<int>();
         int[] dx = { 0, 1, 0, -1 };
         int[] dy = { -1, 0, 1, 0 };
 
         for (int i = 0; i < component.Count; i++)
-        {
-            int idx = component[i];
-            inComponent[idx] = true;
-            dist[idx] = -1;
-        }
+            inComponent[component[i]] = true;
 
         for (int i = 0; i < component.Count; i++)
         {
@@ -926,22 +1051,15 @@ public static class MapGenerator
             for (int k = 0; k < 4; k++)
             {
                 int nx = x + dx[k], ny = y + dy[k];
-                if ((uint)nx >= (uint)w || (uint)ny >= (uint)h)
-                {
-                    edge = true;
-                    break;
-                }
-                if (!inComponent[ny * w + nx])
+                if ((uint)nx >= (uint)w || (uint)ny >= (uint)h || !inComponent[ny * w + nx])
                 {
                     edge = true;
                     break;
                 }
             }
-            if (edge)
-            {
-                dist[idx] = 0;
-                queue.Enqueue(idx);
-            }
+            if (!edge) continue;
+            dist[idx] = 0;
+            queue.Enqueue(idx);
         }
 
         while (queue.Count > 0)
@@ -959,55 +1077,118 @@ public static class MapGenerator
             }
         }
 
-        int maxDist = 0;
+        maxDist = 0;
         for (int i = 0; i < component.Count; i++)
-        {
-            int idx = component[i];
-            if (dist[idx] > maxDist) maxDist = dist[idx];
-        }
-        if (maxDist < 2) return;
+            if (dist[component[i]] > maxDist) maxDist = dist[component[i]];
+    }
 
-        int threshold = maxDist <= 2 ? maxDist : maxDist - 1;
-        int promoted = 0;
+    private static List<int> CollectPeakCandidates(MapState map, List<int> component, int[] dist, int minRidgeDist)
+    {
+        var candidates = new List<int>();
         for (int i = 0; i < component.Count; i++)
         {
             int idx = component[i];
-            if (dist[idx] < threshold) continue;
+            if (dist[idx] < minRidgeDist) continue;
+            int x = idx % map.Width, y = idx / map.Width;
+            if (CountMountainLikeNeighbors8(map, x, y) < 4) continue;
+            candidates.Add(idx);
+        }
+        return candidates;
+    }
+
+    private static int BestPeakSeed(List<int> candidates, int[] dist, int[] elev)
+    {
+        int best = candidates[0];
+        int bestScore = int.MinValue;
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            int idx = candidates[i];
+            int score = dist[idx] * 1_000_000 + elev[idx];
+            if (score <= bestScore) continue;
+            bestScore = score;
+            best = idx;
+        }
+        return best;
+    }
+
+    private static int BestPeakEndpoint(List<int> candidates, int from, int[] dist, int[] elev, int w)
+    {
+        int fx = from % w, fy = from / w;
+        int best = from;
+        int bestScore = int.MinValue;
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            int idx = candidates[i];
             int x = idx % w, y = idx / w;
-            if (CountMountainNeighbors8(map, x, y) < 5) continue;
-            b.Set(x, y, TileType.MountainPeak);
-            promoted++;
+            int manhattan = System.Math.Abs(x - fx) + System.Math.Abs(y - fy);
+            int score = manhattan * 120_000 + dist[idx] * 80_000 + elev[idx];
+            if (score <= bestScore) continue;
+            bestScore = score;
+            best = idx;
         }
+        return best;
     }
 
-    private static int CountMountainNeighbors8(MapState map, int x, int y)
+    private static List<int> FindPeakSpinePath(bool[] inComponent, int[] dist, int[] elev,
+        int minRidgeDist, int start, int target, int w, int h)
     {
-        int count = 0;
-        for (int oy = -1; oy <= 1; oy++)
+        var result = new List<int>();
+        int n = w * h;
+        int[] cost = new int[n];
+        int[] prev = new int[n];
+        bool[] closed = new bool[n];
+        Array.Fill(cost, int.MaxValue);
+        Array.Fill(prev, -1);
+
+        var pq = new PriorityQueue<int, int>();
+        cost[start] = 0;
+        pq.Enqueue(start, 0);
+        int[] dx = { 0, 1, 0, -1 };
+        int[] dy = { -1, 0, 1, 0 };
+
+        while (pq.Count > 0)
         {
-            for (int ox = -1; ox <= 1; ox++)
+            int cur = pq.Dequeue();
+            if (closed[cur]) continue;
+            if (cur == target) break;
+            closed[cur] = true;
+            int cx = cur % w, cy = cur / w;
+
+            for (int k = 0; k < 4; k++)
             {
-                if (ox == 0 && oy == 0) continue;
-                int nx = x + ox, ny = y + oy;
-                if ((uint)nx >= (uint)map.Width || (uint)ny >= (uint)map.Height) continue;
-                if (map.GetTileUnchecked(nx, ny) == TileType.Mountain) count++;
+                int nx = cx + dx[k], ny = cy + dy[k];
+                if ((uint)nx >= (uint)w || (uint)ny >= (uint)h) continue;
+                int nIdx = ny * w + nx;
+                if (closed[nIdx] || !inComponent[nIdx] || dist[nIdx] < minRidgeDist) continue;
+
+                int step = PeakSpineStepCost(nIdx, dist, elev);
+                int nextCost = cost[cur] + step;
+                if (nextCost >= cost[nIdx]) continue;
+                cost[nIdx] = nextCost;
+                prev[nIdx] = cur;
+                int heuristic = (System.Math.Abs(nx - target % w) + System.Math.Abs(ny - target / w)) * 200;
+                pq.Enqueue(nIdx, nextCost + heuristic);
             }
         }
-        return count;
+
+        if (prev[target] < 0) return result;
+        int cursor = target;
+        while (cursor != start)
+        {
+            result.Add(cursor);
+            cursor = prev[cursor];
+        }
+        result.Add(start);
+        result.Reverse();
+        return result;
     }
 
-    private static void DemoteExposedMountainPeaks(MapState.Builder b, int w, int h)
+    private static int PeakSpineStepCost(int idx, int[] dist, int[] elev)
     {
-        var map = b.Build();
-        for (int y = 0; y < h; y++)
-        {
-            for (int x = 0; x < w; x++)
-            {
-                if (map.GetTileUnchecked(x, y) != TileType.MountainPeak) continue;
-                if (CountMountainLikeNeighbors8(map, x, y) < 4)
-                    b.Set(x, y, TileType.Mountain);
-            }
-        }
+        int interiorBonus = System.Math.Min(3600, dist[idx] * 700);
+        int heightCost = (65535 - elev[idx]) / 256;
+        int cost = 5000 - interiorBonus + heightCost;
+        return cost < 50 ? 50 : cost;
     }
 
     private static int CountMountainLikeNeighbors8(MapState map, int x, int y)
@@ -1673,7 +1854,7 @@ public static class MapGenerator
             var temp = b.Build();
             TileType t = temp.GetTileUnchecked(cx, cy);
             if (t == TileType.Water || t == TileType.Mountain || t == TileType.MountainPeak)
-                b.Set(cx, cy, TileType.Plains);
+                PunchLandPatch(b, temp, cx, cy, w, h);
 
             // Move toward target.
             int dx = x1 - cx, dy = y1 - cy;
@@ -1681,6 +1862,21 @@ public static class MapGenerator
                 cx += dx > 0 ? 1 : -1;
             else
                 cy += dy > 0 ? 1 : -1;
+        }
+    }
+
+    private static void PunchLandPatch(MapState.Builder b, MapState map, int cx, int cy, int w, int h)
+    {
+        for (int oy = -1; oy <= 1; oy++)
+        {
+            for (int ox = -1; ox <= 1; ox++)
+            {
+                int x = cx + ox, y = cy + oy;
+                if ((uint)x >= (uint)w || (uint)y >= (uint)h) continue;
+                TileType t = map.GetTileUnchecked(x, y);
+                if (t is TileType.Water or TileType.Mountain or TileType.MountainPeak)
+                    b.Set(x, y, TileType.Plains);
+            }
         }
     }
 }

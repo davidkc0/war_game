@@ -97,8 +97,7 @@ public static class FogOfWar
         {
             Unit u = s.Units[i];
             if (!u.IsAlive || u.Owner != owner) continue;
-            int radius = u.Type == UnitType.Heavy ? HeavyVisionRadius : LightVisionRadius;
-            RevealDiamond(ref s, owner, u.TileX, u.TileY, radius);
+            RevealDiamond(ref s, owner, u.TileX, u.TileY, UnitProgression.VisionRadius(u));
         }
     }
 

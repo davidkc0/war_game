@@ -27,28 +27,35 @@ public class PathfindingTests
     }
 
     [Fact]
-    public void Water_BlocksPath()
+    public void MountainPeak_BlocksPath()
     {
-        // Build a wall of water at x==5 across the whole map. With no gap,
+        // Build a wall of peaks at x==5 across the whole map. With no gap,
         // there is no path.
         var b = new MapState.Builder(10, 10);
-        for (int y = 0; y < 10; y++) b.Set(5, y, TileType.Water);
+        for (int y = 0; y < 10; y++) b.Set(5, y, TileType.MountainPeak);
         var map = b.Build();
         var path = Pathfinding.FindPath(map, 0, 5, 9, 5, false);
         Assert.Empty(path);
     }
 
     [Fact]
-    public void Water_RoutesAround()
+    public void BroadWater_IsPassableButAStarPrefersCheaperLandDetour()
     {
-        // Wall with a single gap at y=0. A* should detour through the gap.
+        // A thick water wall with a land gap at y=0. Water is passable now,
+        // but expensive enough that A* should choose the dry gap.
         var b = new MapState.Builder(10, 10);
-        for (int y = 1; y < 10; y++) b.Set(5, y, TileType.Water);
+        for (int x = 4; x <= 6; x++)
+            for (int y = 1; y < 10; y++)
+                b.Set(x, y, TileType.Water);
         var map = b.Build();
-        var path = Pathfinding.FindPath(map, 0, 5, 9, 5, false);
+        var path = Pathfinding.FindPath(map, 0, 2, 9, 2, false);
         Assert.NotEmpty(path);
-        // The path must pass through (5, 0) — the only gap.
         Assert.Contains(path, p => Coord(p, 10) == (5, 0));
+        Assert.DoesNotContain(path, p =>
+        {
+            var (x, y) = Coord(p, 10);
+            return map.GetTileUnchecked(x, y) == TileType.Water;
+        });
     }
 
     [Fact]

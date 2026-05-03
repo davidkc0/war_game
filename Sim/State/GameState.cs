@@ -21,9 +21,10 @@ namespace WarGame.Sim.State;
 //   8 — Phase 1.5: + PendingForts, Fort tile type, terrain defense, maintenance.
 //   9 — Phase 3a: + supply state, Bridge tile type, PendingRoads.
 //   10 — Phase 3b: + per-player fog of war visibility and last-seen memory.
+//   11 — Phase 3 polish: + city names, unit XP/rank/promotion state.
 public struct GameState
 {
-    public const int CurrentVersion = 10;
+    public const int CurrentVersion = 11;
 
     public int Version;
     public int Tick;

@@ -27,7 +27,7 @@ public static class TileTypeExtensions
     // scattered across systems. Keep all terrain rules localized here.
     public static bool IsPassable(this TileType t, bool isHeavyUnit) => t switch
     {
-        TileType.Water => false,
+        TileType.Water => true,
         TileType.River => true,
         TileType.Bridge => true,
         TileType.Mountain => !isHeavyUnit,
@@ -43,6 +43,7 @@ public static class TileTypeExtensions
     {
         TileType.Road => Math.FP.OneRaw + (Math.FP.OneRaw / 2),       // 1.5x
         TileType.Bridge => Math.FP.OneRaw + (Math.FP.OneRaw / 2),     // 1.5x
+        TileType.Water => Math.FP.OneRaw / 4,                         // broad-water movement
         TileType.River => Math.FP.OneRaw / 3,                         // slow crossing
         TileType.Forest => isHeavyUnit ? Math.FP.OneRaw / 2 : Math.FP.OneRaw, // heavy 0.5x, light unaffected
         TileType.Mountain => isHeavyUnit ? 0 : Math.FP.OneRaw / 4,    // heavy impassable, light 0.25x
@@ -59,6 +60,7 @@ public static class TileTypeExtensions
         TileType.MountainPeak => Math.FP.OneRaw * 50 / 100, // 0.50 (if they could get there)
         TileType.Road     => Math.FP.OneRaw * 110 / 100,    // 1.10
         TileType.Bridge   => Math.FP.OneRaw * 115 / 100,    // 1.15
+        TileType.Water    => Math.FP.OneRaw * 125 / 100,    // 1.25 (exposed in water)
         TileType.River    => Math.FP.OneRaw * 120 / 100,    // 1.20 (bad footing)
         TileType.City     => Math.FP.OneRaw * 60 / 100,     // 0.60
         TileType.Capital  => Math.FP.OneRaw * 60 / 100,     // 0.60

@@ -57,7 +57,7 @@ public static class Movement
                 continue;
 
             FP baseSpeed = UnitStats.TilesPerTick(u.Type);
-            FP terrainFactor = FP.FromRaw(nextTile.SpeedFactorRaw(isHeavy));
+            FP terrainFactor = FP.FromRaw(UnitProgression.SpeedFactorRaw(u, nextTile));
             FP advance = baseSpeed * terrainFactor;
 
             FP newProgress = FP.FromRaw(u.ProgressRaw) + advance;

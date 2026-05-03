@@ -27,6 +27,10 @@ public sealed record MoveUnitCommand(int UnitId, int TargetX, int TargetY) : Com
 // while one is in flight resets ProductionProgress to zero.
 public sealed record BuildUnitCommand(int CityId, WarGame.Sim.State.UnitType? Type) : Command;
 
+// Rename an owned real city/capital. The sim sanitizes the text and stores
+// only deterministic ASCII-visible names.
+public sealed record RenameCityCommand(int CityId, string Name) : Command;
+
 // Build a fort at the specified tile. Validation in GameSim:
 //   - Tile must be Plains (can't build on water/mountain/city/existing fort)
 //   - Tile must be in player's territory (TileOwner check)
@@ -46,3 +50,6 @@ public sealed record BuildRoadCommand(int UnitId, int TargetX, int TargetY) : Co
 
 // Cancel the active road/bridge construction order for one unit.
 public sealed record CancelRoadCommand(int UnitId) : Command;
+
+// Spend one promotion point on a valid perk for a living owned unit.
+public sealed record ChoosePromotionCommand(int UnitId, byte PerkId) : Command;

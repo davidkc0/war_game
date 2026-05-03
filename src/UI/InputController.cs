@@ -45,7 +45,16 @@ public partial class InputController : Node
     public Rect2 MenuLightButtonRect { get; private set; }
     public Rect2 MenuHeavyButtonRect { get; private set; }
     public Rect2 MenuCancelButtonRect { get; private set; }
+    public Rect2 MenuEditNameButtonRect { get; private set; }
+    public Rect2 MenuNameInputRect { get; private set; }
+    public bool RenameMode { get; private set; }
+    public string RenameDraft { get; private set; } = "";
     public bool RoadBuildMode { get; private set; }
+
+    public bool PromotionMenuVisible { get; private set; }
+    public int PromotionUnitId { get; private set; } = -1;
+    public Rect2 PromotionMenuRect { get; private set; }
+    public Rect2[] PromotionPerkButtonRects { get; } = new Rect2[6];
 
     // City hover state — set each frame based on mouse position. The
     // renderer reads this to draw a highlight ring.
@@ -54,6 +63,24 @@ public partial class InputController : Node
     // 6 px was too tight — small mouse jitter on click was triggering drag
     // mode and selecting nothing. 14 px gives a forgiving single-click.
     private const float DragThresholdPx = 14f;
+    private static readonly byte[] LightPromotionPerks =
+    {
+        (byte)UnitPerk.LightOptics,
+        (byte)UnitPerk.LightPathfinder,
+        (byte)UnitPerk.LightQuickMarch,
+        (byte)UnitPerk.LightRoadRunner,
+        (byte)UnitPerk.LightPackTactics,
+        (byte)UnitPerk.LightScreenLine,
+    };
+    private static readonly byte[] HeavyPromotionPerks =
+    {
+        (byte)UnitPerk.HeavyPlating,
+        (byte)UnitPerk.HeavyHullDown,
+        (byte)UnitPerk.HeavyGunnery,
+        (byte)UnitPerk.HeavyBreacher,
+        (byte)UnitPerk.HeavyStabilizers,
+        (byte)UnitPerk.HeavySpotterCrew,
+    };
 
     // Cached mouse position for hover-testing in _Process.
     private Vector2 _mousePos;
@@ -74,6 +101,7 @@ public partial class InputController : Node
         UpdateHoveredCity();
         UpdateRoadPreview();
         RefreshMenuRects();
+        RefreshPromotionMenuRects();
     }
 
     public override void _Input(InputEvent @event)
@@ -108,6 +136,7 @@ public partial class InputController : Node
         {
             if (mb.Pressed)
             {
+                if (PromotionMenuVisible && TryHitPromotionMenu(mb.Position)) return;
                 if (MenuVisible && TryHitProductionMenu(mb.Position)) return;
                 if (RoadBuildMode)
                 {
@@ -133,6 +162,11 @@ public partial class InputController : Node
             if (RoadBuildMode)
             {
                 ExitRoadBuildMode();
+                return;
+            }
+            if (PromotionMenuVisible)
+            {
+                ClosePromotionMenu();
                 return;
             }
             IssueMoveOrderToSelection(mb.Position);
@@ -181,6 +215,7 @@ public partial class InputController : Node
         // the unit whose visual center is closest to the click and within
         // its own radius + a small grab-zone.
         Game.SelectedUnitIds.Clear();
+        ClosePromotionMenu();
         ref readonly GameState st = ref Game.State;
 
         int bestId = -1;
@@ -207,6 +242,7 @@ public partial class InputController : Node
     private void SelectUnitsInBox(Vector2 a, Vector2 b)
     {
         Game.SelectedUnitIds.Clear();
+        ClosePromotionMenu();
         Vector2 tl = new(Mathf.Min(a.X, b.X), Mathf.Min(a.Y, b.Y));
         Vector2 br = new(Mathf.Max(a.X, b.X), Mathf.Max(a.Y, b.Y));
         var box = new Rect2(tl, br - tl);
@@ -272,6 +308,8 @@ public partial class InputController : Node
 
     private void OpenProductionMenu(int cityId, Vector2 anchor)
     {
+        ClosePromotionMenu();
+        RenameMode = false;
         MenuCityId = cityId;
         ComputeMenuRects(anchor);
         MenuVisible = true;
@@ -320,9 +358,10 @@ public partial class InputController : Node
         const float bw = 196f, bh = 32f;
         const float pad = 12f;
 
-        // Idle: title (28px) + gap(8) + lightBtn(32) + gap(8) + heavyBtn(32) + pad(12) = 120
-        // Producing: title (28px) + gap(8) + label(18) + gap(6) + bar(10) + gap(10) + cancelBtn(32) + pad(12) = 124
-        float h = producing ? 124f : 120f;
+        float renameExtra = RenameMode ? 36f : 0f;
+        // Idle: title + optional rename row + two build buttons.
+        // Producing: title + optional rename row + progress + cancel.
+        float h = (producing ? 124f : 120f) + renameExtra;
 
         // Clamp to viewport so the menu stays fully visible.
         Vector2 vp = Game.GetViewportRect().Size;
@@ -334,13 +373,16 @@ public partial class InputController : Node
 
         // Close "x" button — always top-right.
         MenuCancelButtonRect = new Rect2(pos + new Vector2(w - 28, 4), new Vector2(24, 24));
+        MenuEditNameButtonRect = new Rect2(pos + new Vector2(w - 56, 4), new Vector2(24, 24));
+        MenuNameInputRect = new Rect2(pos + new Vector2(pad, 34), new Vector2(w - 24, 26));
+        float contentY = RenameMode ? 36f : 0f;
 
         if (producing)
         {
             // Single "Cancel order" button, placed below the progress bar.
             // Title area: 0–28, gap: 28–36, label: 36–54, gap: 54–60,
             // bar: 60–70, gap: 70–80, cancel button: 80–112.
-            MenuLightButtonRect = new Rect2(pos + new Vector2(pad, 80), new Vector2(bw, bh));
+            MenuLightButtonRect = new Rect2(pos + new Vector2(pad, 80 + contentY), new Vector2(bw, bh));
             // Heavy button rect is unused during production. Place it
             // off-screen so hit-tests never match.
             MenuHeavyButtonRect = new Rect2(new Vector2(-999, -999), Vector2.Zero);
@@ -349,8 +391,8 @@ public partial class InputController : Node
         {
             // Two build buttons stacked vertically.
             // Title: 0–28, gap: 28–36, light: 36–68, gap: 68–76, heavy: 76–108.
-            MenuLightButtonRect = new Rect2(pos + new Vector2(pad, 36), new Vector2(bw, bh));
-            MenuHeavyButtonRect = new Rect2(pos + new Vector2(pad, 76), new Vector2(bw, bh));
+            MenuLightButtonRect = new Rect2(pos + new Vector2(pad, 36 + contentY), new Vector2(bw, bh));
+            MenuHeavyButtonRect = new Rect2(pos + new Vector2(pad, 76 + contentY), new Vector2(bw, bh));
         }
     }
 
@@ -360,6 +402,20 @@ public partial class InputController : Node
         if (MenuCancelButtonRect.HasPoint(screenPos))
         {
             CloseMenu();
+            return true;
+        }
+        if (!RenameMode && MenuEditNameButtonRect.HasPoint(screenPos))
+        {
+            BeginRenameCity();
+            return true;
+        }
+        if (RenameMode)
+        {
+            if (!MenuRect.HasPoint(screenPos))
+            {
+                CloseMenu();
+                return false;
+            }
             return true;
         }
 
@@ -408,6 +464,27 @@ public partial class InputController : Node
     {
         MenuVisible = false;
         MenuCityId = -1;
+        RenameMode = false;
+        RenameDraft = "";
+    }
+
+    private void BeginRenameCity()
+    {
+        if ((uint)MenuCityId >= (uint)Game.State.Cities.Count) return;
+        City c = Game.State.Cities[MenuCityId];
+        RenameDraft = c.Name ?? "";
+        RenameMode = true;
+        ComputeMenuRects(Game.MapToScreen(MapRenderer.TileCenter(c.TileX, c.TileY, Vector2.Zero)));
+    }
+
+    private void CommitRenameCity()
+    {
+        if (!MenuVisible || !RenameMode) return;
+        if ((uint)MenuCityId >= (uint)Game.State.Cities.Count) return;
+        Game.EnqueueCommand(new RenameCityCommand(MenuCityId, RenameDraft)
+        { PlayerId = (int)Game.ActivePlayer });
+        RenameMode = false;
+        RenameDraft = "";
     }
 
     // ---- City hover -------------------------------------------------------
@@ -434,18 +511,30 @@ public partial class InputController : Node
     // ---- Keyboard ---------------------------------------------------------
     private void HandleKey(InputEventKey ek)
     {
+        if (RenameMode)
+        {
+            HandleRenameKey(ek);
+            return;
+        }
+
         switch (ek.Keycode)
         {
             case Key.Tab:
                 ExitRoadBuildMode();
                 Game.SelectedUnitIds.Clear();
                 CloseMenu();
+                ClosePromotionMenu();
                 Game.SwitchActivePlayer();
                 break;
             case Key.Escape:
                 if (RoadBuildMode)
                 {
                     ExitRoadBuildMode();
+                    break;
+                }
+                if (PromotionMenuVisible)
+                {
+                    ClosePromotionMenu();
                     break;
                 }
                 Game.SelectedUnitIds.Clear();
@@ -474,7 +563,140 @@ public partial class InputController : Node
             case Key.B:
                 ToggleRoadBuildMode();
                 break;
+            case Key.P:
+                TogglePromotionMenu();
+                break;
         }
+    }
+
+    private void HandleRenameKey(InputEventKey ek)
+    {
+        switch (ek.Keycode)
+        {
+            case Key.Enter:
+            case Key.KpEnter:
+                CommitRenameCity();
+                return;
+            case Key.Escape:
+                RenameMode = false;
+                RenameDraft = "";
+                return;
+            case Key.Backspace:
+                if (RenameDraft.Length > 0)
+                    RenameDraft = RenameDraft[..^1];
+                return;
+            case Key.Delete:
+                RenameDraft = "";
+                return;
+        }
+
+        if (ek.Unicode >= 32 && ek.Unicode <= 126 && RenameDraft.Length < 24)
+            RenameDraft += (char)ek.Unicode;
+    }
+
+    // ---- Promotion menu --------------------------------------------------
+    private void TogglePromotionMenu()
+    {
+        if (PromotionMenuVisible)
+        {
+            ClosePromotionMenu();
+            return;
+        }
+
+        int unitId = SingleSelectedPromotableUnitId();
+        if (unitId < 0) return;
+        CloseMenu();
+        ExitRoadBuildMode();
+        PromotionUnitId = unitId;
+        PromotionMenuVisible = true;
+        RefreshPromotionMenuRects();
+    }
+
+    private int SingleSelectedPromotableUnitId()
+    {
+        if (Game.SelectedUnitIds.Count != 1) return -1;
+        ref readonly GameState st = ref Game.State;
+        foreach (int id in Game.SelectedUnitIds)
+        {
+            if ((uint)id >= (uint)st.Units.Count) return -1;
+            Unit u = st.Units[id];
+            if (!u.IsAlive || u.Owner != Game.ActivePlayer) return -1;
+            if (u.PromotionPoints == 0) return -1;
+            if (!FogOfWar.IsVisible(st, Game.ActivePlayer, u.TileX, u.TileY)) return -1;
+            return id;
+        }
+        return -1;
+    }
+
+    private void RefreshPromotionMenuRects()
+    {
+        if (!PromotionMenuVisible) return;
+        ref readonly GameState st = ref Game.State;
+        if ((uint)PromotionUnitId >= (uint)st.Units.Count)
+        {
+            ClosePromotionMenu();
+            return;
+        }
+
+        Unit u = st.Units[PromotionUnitId];
+        if (!u.IsAlive || u.Owner != Game.ActivePlayer || u.PromotionPoints == 0
+            || !FogOfWar.IsVisible(st, Game.ActivePlayer, u.TileX, u.TileY))
+        {
+            ClosePromotionMenu();
+            return;
+        }
+
+        Vector2 mapPos = MapRenderer.UnitVisualCenter(u, st.Map, Vector2.Zero);
+        ComputePromotionRects(Game.MapToScreen(mapPos));
+    }
+
+    private void ComputePromotionRects(Vector2 rawPos)
+    {
+        const float w = 260f;
+        const float h = 252f;
+        const float pad = 12f;
+        const float bh = 28f;
+        Vector2 vp = Game.GetViewportRect().Size;
+        float x = Mathf.Clamp(rawPos.X + 18f, 4f, vp.X - w - 4f);
+        float y = Mathf.Clamp(rawPos.Y - h * 0.5f, 52f, vp.Y - h - 44f);
+        Vector2 pos = new(x, y);
+        PromotionMenuRect = new Rect2(pos, new Vector2(w, h));
+        for (int i = 0; i < PromotionPerkButtonRects.Length; i++)
+            PromotionPerkButtonRects[i] = new Rect2(pos + new Vector2(pad, 38 + i * 34), new Vector2(w - pad * 2, bh));
+    }
+
+    private bool TryHitPromotionMenu(Vector2 screenPos)
+    {
+        if (!PromotionMenuVisible) return false;
+        if ((uint)PromotionUnitId >= (uint)Game.State.Units.Count)
+        {
+            ClosePromotionMenu();
+            return false;
+        }
+
+        Unit u = Game.State.Units[PromotionUnitId];
+        byte[] perks = u.Type == UnitType.Heavy ? HeavyPromotionPerks : LightPromotionPerks;
+        for (int i = 0; i < PromotionPerkButtonRects.Length; i++)
+        {
+            if (!PromotionPerkButtonRects[i].HasPoint(screenPos)) continue;
+            Game.EnqueueCommand(new ChoosePromotionCommand(PromotionUnitId, perks[i])
+            { PlayerId = (int)Game.ActivePlayer });
+            ClosePromotionMenu();
+            return true;
+        }
+
+        if (!PromotionMenuRect.HasPoint(screenPos))
+        {
+            ClosePromotionMenu();
+            return false;
+        }
+        return true;
+    }
+
+    public void ClosePromotionMenu()
+    {
+        PromotionMenuVisible = false;
+        PromotionUnitId = -1;
     }
 
     private void ToggleRoadBuildMode()
@@ -488,6 +710,7 @@ public partial class InputController : Node
         int unitId = SelectedRoadBuilderId();
         if (unitId < 0) return;
         CloseMenu();
+        ClosePromotionMenu();
         RoadBuildMode = true;
         UpdateRoadPreview();
     }
@@ -508,6 +731,7 @@ public partial class InputController : Node
             if ((uint)id >= (uint)st.Units.Count) continue;
             Unit u = st.Units[id];
             if (!u.IsAlive || u.Owner != Game.ActivePlayer) continue;
+            if (TerrainRules.IsBroadWater(st.Map, u.TileX, u.TileY)) continue;
             if (id < best) best = id;
         }
         return best == int.MaxValue ? -1 : best;
@@ -579,9 +803,22 @@ public partial class InputController : Node
         ref readonly GameState st = ref Game.State;
         if (!st.Map.InBounds(tx, ty)) return;
         if (!FogOfWar.IsVisible(st, Game.ActivePlayer, tx, ty)) return;
+        if (Game.SelectedUnitIds.Count > 0 && !HasSelectedLandBuilder(st)) return;
 
         Game.EnqueueCommand(new BuildFortCommand(tx, ty)
         { PlayerId = (int)Game.ActivePlayer });
+    }
+
+    private bool HasSelectedLandBuilder(in GameState st)
+    {
+        foreach (int id in Game.SelectedUnitIds)
+        {
+            if ((uint)id >= (uint)st.Units.Count) continue;
+            Unit u = st.Units[id];
+            if (!u.IsAlive || u.Owner != Game.ActivePlayer) continue;
+            if (!TerrainRules.IsBroadWater(st.Map, u.TileX, u.TileY)) return true;
+        }
+        return false;
     }
 
     /// <summary>

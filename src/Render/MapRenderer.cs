@@ -456,21 +456,46 @@ public static class MapRenderer
                 }
             }
 
+            if (u.PromotionPoints > 0)
+            {
+                float time = (float)(Time.GetTicksMsec() / 1000.0);
+                float pulse = 0.5f + 0.5f * Mathf.Sin(time * 2.5f);
+                Color glow = Theme.SelectRing;
+                glow.A = 0.18f + pulse * 0.14f;
+                canvas.DrawCircle(center, radius + 8f + pulse * 2f, glow);
+                Color edgeGlow = Theme.SelectRing;
+                edgeGlow.A = 0.82f;
+                canvas.DrawArc(center, radius + 8f + pulse * 2f, 0, Mathf.Tau, 32, edgeGlow, 1.4f);
+            }
+
             // Drop shadow.
             canvas.DrawCircle(center + new Vector2(0, 2), radius, new Color(0, 0, 0, 0.40f));
 
-            // Body — circles for light, hexagons for heavy.
-            if (u.Type == UnitType.Heavy)
+            bool shipVisual = IsBroadWaterVisual(u, state.Map);
+            if (shipVisual)
+            {
+                DrawShip(canvas, center, radius * 1.15f, faction);
+            }
+            else if (u.Type == UnitType.Heavy)
+            {
                 DrawHexagon(canvas, center, radius, faction);
+            }
             else
+            {
                 canvas.DrawCircle(center, radius, faction);
+            }
 
             // Faint inner mark to differentiate at a glance.
             Color inner = Theme.ForPlayerDim(u.Owner);
-            canvas.DrawCircle(center, radius * 0.4f, inner);
+            if (shipVisual)
+                canvas.DrawLine(center + new Vector2(-radius * 0.45f, radius * 0.1f),
+                    center + new Vector2(radius * 0.45f, radius * 0.1f), inner, 2f);
+            else
+                canvas.DrawCircle(center, radius * 0.4f, inner);
 
             // HP bar — only when wounded so unscathed units stay clean.
             DrawHpBar(canvas, u, center, radius);
+            DrawRankStars(canvas, u, center, radius);
         }
 
         // Stack-count badges. We draw these AFTER units so the badge sits
@@ -514,6 +539,43 @@ public static class MapRenderer
 
         Color fill = frac < 0.33f ? Theme.HpBarLow : Theme.HpBarFill;
         canvas.DrawRect(new Rect2(tl, new Vector2(barW * frac, barH)), fill);
+    }
+
+    private static void DrawRankStars(CanvasItem canvas, in Unit u, Vector2 center, float radius)
+    {
+        int stars = Mathf.Clamp((int)u.Rank - 1, 0, 3);
+        if (stars <= 0) return;
+
+        float totalW = (stars - 1) * 8f;
+        Vector2 start = center + new Vector2(-totalW * 0.5f, -radius - 13f);
+        for (int i = 0; i < stars; i++)
+        {
+            Vector2 c = start + new Vector2(i * 8f, 0);
+            DrawStar(canvas, c, 4.2f, 1.8f, Theme.SelectRing);
+        }
+    }
+
+    private static bool IsBroadWaterVisual(in Unit u, in MapState map)
+    {
+        if (TerrainRules.IsBroadWater(map, u.TileX, u.TileY)) return true;
+        if (u.Path is null || u.Path.Count == 0) return false;
+
+        int next = u.Path[0];
+        int nx = next % map.Width, ny = next / map.Width;
+        return TerrainRules.IsBroadWater(map, nx, ny);
+    }
+
+    private static void DrawShip(CanvasItem canvas, Vector2 center, float radius, Color color)
+    {
+        var hull = new Vector2[]
+        {
+            center + new Vector2(0, -radius),
+            center + new Vector2(radius * 0.72f, -radius * 0.18f),
+            center + new Vector2(radius * 0.44f, radius * 0.78f),
+            center + new Vector2(-radius * 0.44f, radius * 0.78f),
+            center + new Vector2(-radius * 0.72f, -radius * 0.18f),
+        };
+        canvas.DrawColoredPolygon(hull, color);
     }
 
     private static Vector2 StackOffset(int idx, int size, float tilePx)

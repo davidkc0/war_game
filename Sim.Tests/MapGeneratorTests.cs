@@ -279,6 +279,37 @@ public class MapGeneratorTests
     }
 
     [Fact]
+    public void Generated_MountainPeaksFormThinConnectedSpines()
+    {
+        for (int seed = 0; seed < 20; seed++)
+        {
+            var result = MapGenerator.Generate((ulong)(seed * 1000 + 7));
+            int w = result.Map.Width, h = result.Map.Height;
+
+            for (int y = 0; y < h; y++)
+            {
+                for (int x = 0; x < w; x++)
+                {
+                    if (result.Map.GetTileUnchecked(x, y) != TileType.MountainPeak) continue;
+
+                    int neighbors = PeakCardinalNeighbors(result.Map, x, y);
+                    Assert.InRange(neighbors, 1, 2);
+
+                    if (x + 1 < w && y + 1 < h)
+                    {
+                        bool block =
+                            result.Map.GetTileUnchecked(x, y) == TileType.MountainPeak
+                            && result.Map.GetTileUnchecked(x + 1, y) == TileType.MountainPeak
+                            && result.Map.GetTileUnchecked(x, y + 1) == TileType.MountainPeak
+                            && result.Map.GetTileUnchecked(x + 1, y + 1) == TileType.MountainPeak;
+                        Assert.False(block, $"seed {seed}: peak spine formed a 2x2 blob at ({x},{y})");
+                    }
+                }
+            }
+        }
+    }
+
+    [Fact]
     public void Generated_RoadsDoNotConnectEnemyTerritories()
     {
         for (int seed = 0; seed < 20; seed++)
@@ -312,6 +343,41 @@ public class MapGeneratorTests
                 || RoadOrRiverReachable(result.Map, result.Cities[1].TileX, result.Cities[1].TileY,
                     result.Cities[5].TileX, result.Cities[5].TileY),
                 $"seed {seed}: player 2 capital has no road to any owned city");
+        }
+    }
+
+    [Fact]
+    public void Generated_CitiesAvoidSingleTileLandStrips()
+    {
+        for (int seed = 0; seed < 20; seed++)
+        {
+            var result = MapGenerator.Generate((ulong)(seed * 1000 + 7));
+            for (int i = 0; i < result.Cities.Count; i++)
+            {
+                City c = result.Cities[i];
+                Assert.True(TerrainRules.HasStableCityFootprint(result.Map, c.TileX, c.TileY),
+                    $"seed {seed}: city {i} at ({c.TileX},{c.TileY}) spawned on an unstable one-tile land strip");
+            }
+        }
+    }
+
+    [Fact]
+    public void Generated_RoadsAvoidSingleTileLandStrips()
+    {
+        for (int seed = 0; seed < 20; seed++)
+        {
+            var result = MapGenerator.Generate((ulong)(seed * 1000 + 7));
+            for (int y = 0; y < result.Map.Height; y++)
+            {
+                for (int x = 0; x < result.Map.Width; x++)
+                {
+                    if (result.Map.GetTileUnchecked(x, y) != TileType.Road) continue;
+                    Assert.False(TerrainRules.IsNarrowLandCauseway(result.Map, x, y),
+                        $"seed {seed}: road at ({x},{y}) runs along a one-tile causeway");
+                    Assert.True(TerrainRules.HasTwoByTwoLandFootprint(result.Map, x, y),
+                        $"seed {seed}: road at ({x},{y}) has no 2x2 land support and reads as a single-line strip");
+                }
+            }
         }
     }
 
@@ -623,6 +689,16 @@ public class MapGeneratorTests
         bool north = y > 0 && IsMountainLike(map.GetTileUnchecked(x, y - 1));
         bool south = y + 1 < map.Height && IsMountainLike(map.GetTileUnchecked(x, y + 1));
         return (west && east) || (north && south);
+    }
+
+    private static int PeakCardinalNeighbors(MapState map, int x, int y)
+    {
+        int count = 0;
+        if (x > 0 && map.GetTileUnchecked(x - 1, y) == TileType.MountainPeak) count++;
+        if (x + 1 < map.Width && map.GetTileUnchecked(x + 1, y) == TileType.MountainPeak) count++;
+        if (y > 0 && map.GetTileUnchecked(x, y - 1) == TileType.MountainPeak) count++;
+        if (y + 1 < map.Height && map.GetTileUnchecked(x, y + 1) == TileType.MountainPeak) count++;
+        return count;
     }
 
     private static bool IsMountainLike(TileType t) => t is TileType.Mountain or TileType.MountainPeak;

@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.IO;
+using System.Text;
 using WarGame.Sim.State;
 
 namespace WarGame.Sim;
@@ -36,6 +37,10 @@ public static class StateSerializer
             WriteI32(stream, u.TileX);
             WriteI32(stream, u.TileY);
             WriteI64(stream, u.Hp.Raw);
+            WriteI64(stream, u.XpRaw);
+            stream.WriteByte(u.Rank);
+            stream.WriteByte(u.PromotionPoints);
+            WriteU32(stream, u.PerkMask);
             WriteI64(stream, u.ProgressRaw);
 
             int pathLen = u.Path is null ? 0 : u.Path.Count;
@@ -57,6 +62,7 @@ public static class StateSerializer
             WriteI32(stream, c.SupplyCapacity);
             WriteI64(stream, c.ProductionProgress.Raw);
             stream.WriteByte(c.ProductionOrder);
+            WriteString(stream, c.Name);
             WriteI32(stream, c.CaptureHp);
         }
 
@@ -176,5 +182,25 @@ public static class StateSerializer
         Span<byte> b = stackalloc byte[8];
         BinaryPrimitives.WriteUInt64LittleEndian(b, v);
         s.Write(b);
+    }
+
+    private static void WriteU32(Stream s, uint v)
+    {
+        Span<byte> b = stackalloc byte[4];
+        BinaryPrimitives.WriteUInt32LittleEndian(b, v);
+        s.Write(b);
+    }
+
+    private static void WriteString(Stream s, string? v)
+    {
+        if (string.IsNullOrEmpty(v))
+        {
+            WriteI32(s, 0);
+            return;
+        }
+
+        byte[] bytes = Encoding.UTF8.GetBytes(v);
+        WriteI32(s, bytes.Length);
+        s.Write(bytes);
     }
 }

@@ -124,6 +124,29 @@ public class SupplyLinesTests
         Assert.Equal(Maintenance.MaintenancePerTick * Maintenance.CutOffMultiplier, cutCost);
     }
 
+    [Fact]
+    public void FriendlyTerritorySupply_DoesNotFloodAcrossBroadWater()
+    {
+        var s = GameState.Initial(seed: 8);
+        var b = new MapState.Builder(6, 1);
+        b.Set(0, 0, TileType.Capital);
+        b.Set(2, 0, TileType.Water);
+        b.Set(3, 0, TileType.Water);
+        s.Map = b.Build();
+        s.TileOwner = new byte[6];
+        s.TileSupplyOwner = new byte[6];
+        s.TileRoadSupplyOwner = new byte[6];
+        for (int i = 0; i < s.TileOwner.Length; i++)
+            s.TileOwner[i] = (byte)PlayerId.Player1;
+        s.Cities.Add(City.Create(0, 0, 0, PlayerId.Player1, isCapital: true));
+        s.Units.Add(Unit.Create(0, PlayerId.Player1, UnitType.Light, 5, 0));
+
+        SupplyLines.Tick(ref s);
+
+        Assert.Equal(SupplyStatus.CutOff, SupplyLines.GetUnitStatus(s, 0));
+        Assert.Equal((byte)PlayerId.None, s.TileSupplyOwner[5]);
+    }
+
     private static GameState BuildStrip(TileType fill)
     {
         var s = GameState.Initial(seed: 1);

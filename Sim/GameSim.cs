@@ -48,6 +48,9 @@ public static class GameSim
                     case BuildUnitCommand b:
                         ApplyBuildUnit(ref s, b);
                         break;
+                    case RenameCityCommand rc:
+                        ApplyRenameCity(ref s, rc);
+                        break;
                     case BuildFortCommand f:
                         ApplyBuildFort(ref s, f);
                         break;
@@ -59,6 +62,9 @@ public static class GameSim
                         break;
                     case CancelRoadCommand cr:
                         ApplyCancelRoad(ref s, cr);
+                        break;
+                    case ChoosePromotionCommand cp:
+                        ApplyChoosePromotion(ref s, cp);
                         break;
                     case NoOpCommand:
                         break;
@@ -140,6 +146,20 @@ public static class GameSim
             c.ProductionOrder = want;
             c.ProductionProgress = FP.Zero;
         }
+    }
+
+    private static void ApplyRenameCity(ref GameState s, RenameCityCommand cmd)
+    {
+        if ((uint)cmd.CityId >= (uint)s.Cities.Count) return;
+
+        Span<City> cities = CollectionsMarshal.AsSpan(s.Cities);
+        ref City c = ref cities[cmd.CityId];
+
+        if (c.Owner == PlayerId.None) return;
+        if ((int)c.Owner != cmd.PlayerId) return;
+        if (s.Map.GetTileUnchecked(c.TileX, c.TileY).IsFortTile()) return;
+
+        c.Name = SanitizeCityName(cmd.Name);
     }
 
     private static void ApplyBuildFort(ref GameState s, BuildFortCommand cmd)
@@ -234,6 +254,7 @@ public static class GameSim
         if (!u.IsAlive) return;
         if (u.Owner != owner) return;
         if (u.Path is { Count: > 0 }) return;
+        if (TerrainRules.IsBroadWater(s.Map, u.TileX, u.TileY)) return;
 
         List<int> path = Pathfinding.FindRoadBuildPath(s.Map, u.TileX, u.TileY, cmd.TargetX, cmd.TargetY);
         if (path.Count == 0) return;
@@ -250,5 +271,39 @@ public static class GameSim
         if ((uint)cmd.UnitId >= (uint)s.Units.Count) return;
         if (s.Units[cmd.UnitId].Owner != owner) return;
         RoadConstruction.CancelForUnit(ref s, cmd.UnitId);
+    }
+
+    private static void ApplyChoosePromotion(ref GameState s, ChoosePromotionCommand cmd)
+    {
+        var owner = (PlayerId)cmd.PlayerId;
+        if (owner == PlayerId.None) return;
+        if ((uint)cmd.UnitId >= (uint)s.Units.Count) return;
+
+        Span<Unit> units = CollectionsMarshal.AsSpan(s.Units);
+        ref Unit u = ref units[cmd.UnitId];
+        if (u.Owner != owner) return;
+
+        UnitProgression.TryChoosePerk(ref u, cmd.PerkId);
+    }
+
+    private static string? SanitizeCityName(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+
+        Span<char> buffer = stackalloc char[24];
+        int len = 0;
+        for (int i = 0; i < raw.Length && len < buffer.Length; i++)
+        {
+            char c = raw[i];
+            if (c < 32 || c > 126) continue;
+            buffer[len++] = c;
+        }
+
+        while (len > 0 && buffer[len - 1] == ' ') len--;
+        int start = 0;
+        while (start < len && buffer[start] == ' ') start++;
+
+        if (start >= len) return null;
+        return new string(buffer[start..len]);
     }
 }

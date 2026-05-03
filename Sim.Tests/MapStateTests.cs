@@ -108,8 +108,8 @@ public class TileTypePassabilityTests
     [InlineData(TileType.Forest, true, true)]
     [InlineData(TileType.Mountain, false, true)]   // light passes
     [InlineData(TileType.Mountain, true, false)]   // heavy blocked
-    [InlineData(TileType.Water, false, false)]
-    [InlineData(TileType.Water, true, false)]
+    [InlineData(TileType.Water, false, true)]
+    [InlineData(TileType.Water, true, true)]
     [InlineData(TileType.Road, false, true)]
     [InlineData(TileType.Bridge, false, true)]
     [InlineData(TileType.City, false, true)]
@@ -141,5 +141,12 @@ public class TileTypePassabilityTests
     public void HeavyOnMountainIsZero()
     {
         Assert.Equal(0, TileType.Mountain.SpeedFactorRaw(true));
+    }
+
+    [Fact]
+    public void WaterIsSlowerThanRiverAndBadForDefense()
+    {
+        Assert.True(TileType.Water.SpeedFactorRaw(false) < TileType.River.SpeedFactorRaw(false));
+        Assert.True(TileType.Water.DefenseMultiplierRaw() > TileType.Plains.DefenseMultiplierRaw());
     }
 }

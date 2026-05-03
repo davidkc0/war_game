@@ -33,12 +33,15 @@ public struct City
     public FP ProductionProgress;    // ECO accumulated toward current order
     public byte ProductionOrder;     // (UnitType + 1), 0 = idle. (+1 lets us
                                      //  reserve 0 as the empty sentinel.)
+    public string? Name;             // Optional player-authored city name.
 
     // Capture health. Starts at MaxCaptureHp; enemy units deplete it.
     // When it reaches 0, the city flips ownership and CaptureHp resets.
     public int CaptureHp;
 
     public bool IsProducing => ProductionOrder != 0;
+    public string DefaultName => IsCapital ? "Capital" : $"City {Id + 1}";
+    public string DisplayName => string.IsNullOrWhiteSpace(Name) ? DefaultName : Name!;
 
     // Capture tuning constants.
     public const int CityMaxCaptureHp    = 100;
@@ -71,6 +74,7 @@ public struct City
             SupplyCapacity = UnitStats.CitySupplyCapacity,
             ProductionProgress = FP.Zero,
             ProductionOrder = 0,
+            Name = null,
             CaptureHp = isCapital ? CapitalMaxCaptureHp : CityMaxCaptureHp,
         };
     }

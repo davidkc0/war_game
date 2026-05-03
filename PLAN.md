@@ -20,7 +20,9 @@
 
 **Phase 3b (Fog of War): ✅ COMPLETE.** Per-player tile visibility now tracks Hidden / Explored / Visible state, remembers last-seen terrain/ownership, filters rendering and hot-seat input by active player, hides enemy units outside vision, and prevents movement/build commands into black fog.
 
-**Next up: Phase 3a polish pass, then Phase 3d (Doctrines).**
+**Phase 3 Polish / Progression: ✅ COMPLETE.** Doctrines are deferred. This pass added fog-aware HUD cleanup, selected-unit details, city renaming, broad-water movement with ship visuals, and conservative in-match unit promotions.
+
+**Next up: Phase 3e (Larger Maps + Camera/Minimap polish), then revisit Doctrines once the core readability pass feels good.**
 
 ### Repo layout (live at `~/Projects/war_game/`)
 
@@ -37,18 +39,19 @@ war_game/
                VisibilityState.cs,
                Unit.cs, City.cs, Player.cs, PlayerId.cs,
                UnitType.cs, UnitStats.cs, FortOrder.cs, RoadOrder.cs
-    Commands/  Command.cs (MoveUnit, BuildUnit, BuildFort,
-               RazeFort, BuildRoad, CancelRoad, NoOp)
+    Commands/  Command.cs (MoveUnit, BuildUnit, RenameCity,
+               BuildFort, RazeFort, BuildRoad, CancelRoad,
+               ChoosePromotion, NoOp)
     Systems/   Movement, Combat, Production, Healing,
                CityCapture, FortConstruction, Maintenance,
                PowerProjection, SupplyLines, RoadConstruction,
-               FogOfWar,
+               FogOfWar, UnitProgression, TerrainRules,
                WinConditions, Encirclement (legacy instant-kill disabled),
                Pathfinding (A*)
     Generation/ IntegerNoise.cs, MapGenerator.cs, BalanceValidator.cs
     GameSim.cs                ← per-tick orchestrator
     StateSerializer.cs        ← canonical hash/replay serializer
-  Sim.Tests/                 ← xUnit, runs via `dotnet test`, 172 tests
+  Sim.Tests/                 ← xUnit, runs via `dotnet test`, 188 tests
     WarGame.Sim.Tests.csproj
   src/                       ← Godot scene scripts
     Main.cs, Main.tscn        ← entry; switches to Game.tscn
@@ -63,12 +66,13 @@ war_game/
 
 ### Schema state
 
-`GameState.CurrentVersion = 10`. Schema history:
+`GameState.CurrentVersion = 11`. Schema history:
 - v1–v5: Phase 0–1 baseline
 - v7: City.CaptureHp (Advance Wars-style capture)
 - v8: PendingForts, Fort tile type, terrain defense, maintenance
 - v9: TileSupplyOwner, TileRoadSupplyOwner, UnitSupplyStatus, PendingRoads, Bridge tile type
 - v10: TileVisibility, LastSeenTileType, LastSeenTileOwner
+- v11: City.Name, Unit.XpRaw, Unit.Rank, Unit.PromotionPoints, Unit.PerkMask
 
 Determinism golden hash pinned in `Sim.Tests/DeterminismTests.cs`. Bump version + repin whenever the byte layout changes.
 
@@ -88,15 +92,17 @@ A hot-seat 1v1 RTS on a procedurally generated 60×60 map (`Sim/Generation/MapGe
 - **Two unit types** (Light, Heavy) with PLAN.md §3 stat baseline
 - **Deterministic A* pathfinding** with terrain costs
 - **Movement** — sub-tile interpolation, friendly pass-through, enemy blocking
+- **Water movement** — broad water is passable but slow (0.25×); rivers keep slow crossing behavior; units on broad water render as ship silhouettes and cannot capture or engineer roads/forts
 - **Combat** — adjacent engagement, two-pass simultaneous damage, **three stacking modifiers**:
   - Concentration-of-force (+15% per additional ally attacking same target)
   - Terrain defense (forest 30%, mountain 50%, city 40%, fort 55% damage reduction)
   - Moving-attacker penalty (15% less damage while in motion)
+- **Unit progression** — units gain XP from actual combat damage and kill bonus XP; ranks 2–4 grant promotion points; Light/Heavy each have six conservative perks; promoted ranks show stars and unspent points pulse gold on-map
 - **City capture** — Advance Wars-style HP-based capture (cities 100 HP, capitals 200 HP; on-tile units deal 3 dmg/tick, adjacent 1 dmg/tick)
 - **Fortifications** — built via `F` key on Plains in owned territory; 50 ECO, 10 sec build; 55% damage reduction, base-25/radius-6 projection, +2 supply; CaptureHp 80; razeable via `R` key; max 3 per player; cancelled if territory lost during construction
 - **Supply lines** — owned cities/capitals/forts seed supply; friendly territory carries normal supply; roads/bridges carry road-assisted supply outside friendly territory; enemy units on roads/bridges interdict the road bonus/path
 - **Unit maintenance** — 0.02 ECO/tick per unsheltered unit; road-supplied units pay 50%; cut-off units pay 150%; units on friendly cities or forts exempt; no ECO = starvation damage
-- **City + capital production** (1 ECO/sec, 3 ECO/sec; build orders for Light/Heavy; cancel order)
+- **City + capital production** (1 ECO/sec, 3 ECO/sec; build orders for Light/Heavy; cancel order; owned real cities/capitals can be renamed from the production menu)
 - **Healing** on friendly-controlled owned cities/forts only (0.5 HP/tick at 0.05 ECO/tick cost); road supply never enables healing
 - **Power projection** (additive linear-falloff; fort-aware: fort base=25, radius=6)
 - **Win conditions** (capture enemy capital OR hold ≥80% of cities for 30 consecutive seconds)
@@ -104,7 +110,7 @@ A hot-seat 1v1 RTS on a procedurally generated 60×60 map (`Sim/Generation/MapGe
 - **Map balance scoring** — 4-axis `BalanceValidator` (path symmetry / terrain parity / choke points / connectivity), threshold ≥250/400, reject-and-retry up to 10 attempts with deterministic xorshift seed perturbation
 - **Road/bridge engineering** — selected unit + `B` enters road-build mode; hover previews the deterministic engineering path; click commits `BuildRoadCommand`; land segments cost 2 ECO/30 ticks; bridges over rivers or 1-tile-wide waterways cost 8 ECO/90 ticks; broad water, mountain peaks, and skinny land causeways between water are blocked
 - **Fog of war** — each hot-seat player has separate Hidden / Explored / Visible tile state; friendly light units reveal radius 5, heavy units radius 4, and owned cities/capitals/forts radius 8; explored tiles show dim last-seen terrain/ownership/structures but no units; hidden tiles show no information
-- **Visual layer**: Teal/Coral palette, Inter fallback, terrain tones, drop shadows, borders, HP bars, star icons, stack fanning, hostile-territory ring, supply status rings, victory banner, fort diamonds (amber), road/bridge previews, build progress bars, capture HP bars
+- **Visual layer**: Teal/Coral palette, Inter fallback, terrain tones, drop shadows, borders, HP bars, rank stars, promotion glow, ship silhouettes on broad water, stack fanning, hostile-territory ring, supply status rings, victory banner, fort diamonds (amber), road/bridge previews, build progress bars, capture HP bars
 
 Performance: **1.6 ms/tick avg** with 200 units on a 60×60 map. ~18× headroom under the 30 ms budget for 30 Hz sim.
 
@@ -126,9 +132,11 @@ Performance: **1.6 ms/tick avg** with 200 units on a 60×60 map. ~18× headroom 
 | Right-click | Issue move order |
 | Q | Build Light (when city menu open) |
 | W | Build Heavy (when city menu open) |
+| Production menu `E` button | Edit owned city/capital name |
 | F | Build fort at tile under cursor |
 | R | Raze fort at tile under cursor |
 | B | Enter road/bridge build mode for selected unit; hover previews path, left-click commits |
+| P | Open promotion chooser for one selected unit with an unspent promotion point |
 | Tab | Switch active player (hot-seat) |
 | Esc | Clear selection / Close menu |
 | F11 | Toggle fullscreen |
@@ -139,13 +147,14 @@ Performance: **1.6 ms/tick avg** with 200 units on a 60×60 map. ~18× headroom 
 2. **No Inter font bundled**. Theme.cs uses SystemFont fallback chain. Bundle `.ttf` in Phase 6.
 3. **Editorconfig analyzer warnings** — Chickensoft template default; harmless.
 4. **Stat tuning ongoing**. The stats above are starting points.
+5. **Doctrines deferred**. The old Phase 3d plan is intentionally paused until readability, larger-map ergonomics, and promotion tuning settle.
 
 ### How to resume work cold
 
 ```bash
 cd ~/Projects/war_game
 export PATH="$HOME/.dotnet:$PATH"   # .NET 8 SDK in user profile
-dotnet test Sim.Tests/              # confirm 172/172 still green
+dotnet test Sim.Tests/              # confirm 188/188 still green
 dotnet build WarGame.csproj         # confirm Godot project builds
 open project.godot                  # or run via Godot.app, F5 to play
 ```
@@ -158,9 +167,9 @@ To add a new sim system:
 
 ### Next session priorities (in order)
 
-1. **Phase 3a polish pass**: playtest supply/fog readability together and tune maintenance multipliers / road build costs if cutoffs feel too weak or too punishing.
-2. **Phase 3d — Doctrines**: pre-match selection screen with Maneuver / Attrition / Combined Arms. Each modifies a few stats and unlocks one ability per PLAN.md §3.4.
-3. **Phase 3e — Larger Maps + Camera**: bump default to 80×80 (with 120×120 option). Camera pan/zoom already exists; add minimap and performance pass.
+1. **Phase 3e — Larger Maps + Camera/Minimap**: bump default to 80×80 (with 120×120 option), improve camera feel, add minimap, and verify 500+ units remain smooth.
+2. **Promotion tuning pass**: playtest XP pacing, rank thresholds, perk readability, and whether any perk is becoming a default pick.
+3. **Phase 3d — Doctrines (deferred)**: pre-match selection screen with Maneuver / Attrition / Combined Arms after the core UX and progression systems settle.
 4. **Fix `godot-export` CI** — drag a working version pin into `.github/workflows/build.yml`. Determinism CI is solid; binary builds just need a green action.
 
 ### Phase 2 design notes (for posterity)

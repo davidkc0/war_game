@@ -51,6 +51,7 @@ public static class CityCapture
                 if (!u.IsAlive) continue;
                 if (u.Owner == c.Owner) continue;   // friendly — skip
                 if (u.Owner == PlayerId.None) continue;
+                if (TerrainRules.IsBroadWater(s.Map, u.TileX, u.TileY)) continue;
 
                 int dx = u.TileX - c.TileX;
                 int dy = u.TileY - c.TileY;

@@ -30,6 +30,10 @@ public struct Unit
     public int TileX;
     public int TileY;
     public FP Hp;
+    public long XpRaw;
+    public byte Rank;
+    public byte PromotionPoints;
+    public uint PerkMask;
     public List<int> Path;     // never null after Create; empty when idle
     public long ProgressRaw;   // FP raw; reset to 0 when Path becomes empty
 
@@ -49,6 +53,10 @@ public struct Unit
             TileX = x,
             TileY = y,
             Hp = UnitStats.MaxHp(type),
+            XpRaw = 0,
+            Rank = 1,
+            PromotionPoints = 0,
+            PerkMask = 0,
             Path = new List<int>(),
             ProgressRaw = 0,
         };
