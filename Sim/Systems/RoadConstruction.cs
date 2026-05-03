@@ -46,7 +46,7 @@ public static class RoadConstruction
             }
 
             TileType tile = s.Map.GetTileUnchecked(tx, ty);
-            if (!Pathfinding.IsEngineeringPassable(tile))
+            if (!Pathfinding.CanEngineerEnter(s.Map, u.TileX, u.TileY, tx, ty))
             {
                 s.PendingRoads.RemoveAt(i);
                 continue;
@@ -78,7 +78,7 @@ public static class RoadConstruction
             order.TicksRemainingOnTile--;
             if (order.TicksRemainingOnTile <= 0)
             {
-                s.Map.SetTile(tx, ty, tile == TileType.River ? TileType.Bridge : TileType.Road);
+                s.Map.SetTile(tx, ty, Pathfinding.IsBridgeTerrain(tile) ? TileType.Bridge : TileType.Road);
                 MoveBuilderTo(ref u, tx, ty);
                 order.CurrentPathIndex++;
             }
@@ -87,8 +87,8 @@ public static class RoadConstruction
         }
     }
 
-    public static int EcoCostFor(TileType t) => t == TileType.River ? BridgeEcoCost : RoadEcoCost;
-    public static int BuildTicksFor(TileType t) => t == TileType.River ? BridgeBuildTicks : RoadBuildTicks;
+    public static int EcoCostFor(TileType t) => Pathfinding.IsBridgeTerrain(t) ? BridgeEcoCost : RoadEcoCost;
+    public static int BuildTicksFor(TileType t) => Pathfinding.IsBridgeTerrain(t) ? BridgeBuildTicks : RoadBuildTicks;
 
     public static void CancelForUnit(ref GameState s, int unitId)
     {

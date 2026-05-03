@@ -253,6 +253,7 @@ public partial class InputController : Node
         var (tx, ty) = MapRenderer.ScreenToTile(Game.ScreenToMap(screenPos), Vector2.Zero);
         ref readonly GameState st = ref Game.State;
         if (!st.Map.InBounds(tx, ty)) return false;
+        if (st.Map.GetTileUnchecked(tx, ty).IsFortTile()) return false;
 
         for (int i = 0; i < st.Cities.Count; i++)
         {
@@ -282,6 +283,12 @@ public partial class InputController : Node
     {
         if (!MenuVisible) return;
         if ((uint)MenuCityId >= (uint)Game.State.Cities.Count)
+        {
+            CloseMenu();
+            return;
+        }
+        City menuCity = Game.State.Cities[MenuCityId];
+        if (Game.State.Map.GetTileUnchecked(menuCity.TileX, menuCity.TileY).IsFortTile())
         {
             CloseMenu();
             return;
@@ -401,6 +408,7 @@ public partial class InputController : Node
         var (tx, ty) = MapRenderer.ScreenToTile(Game.ScreenToMap(_mousePos), Vector2.Zero);
         ref readonly GameState st = ref Game.State;
         if (!st.Map.InBounds(tx, ty)) return;
+        if (st.Map.GetTileUnchecked(tx, ty).IsFortTile()) return;
 
         for (int i = 0; i < st.Cities.Count; i++)
         {
@@ -576,6 +584,11 @@ public partial class InputController : Node
         if ((uint)MenuCityId >= (uint)Game.State.Cities.Count) return;
 
         City c = Game.State.Cities[MenuCityId];
+        if (Game.State.Map.GetTileUnchecked(c.TileX, c.TileY).IsFortTile())
+        {
+            CloseMenu();
+            return;
+        }
         if (c.IsProducing)
         {
             // If already producing, Q acts as cancel (same as clicking the

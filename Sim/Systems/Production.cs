@@ -28,6 +28,7 @@ public static class Production
         {
             City c = s.Cities[i];
             if (c.Owner == PlayerId.None) continue;
+            if (s.Map.GetTileUnchecked(c.TileX, c.TileY).IsFortTile()) continue;
             FP rate = c.IsCapital ? UnitStats.CapitalEcoPerTick : UnitStats.CityEcoPerTick;
             s.Players[(int)c.Owner].Eco += rate;
         }
@@ -56,6 +57,12 @@ public static class Production
             ref City c = ref cities[i];
             if (!c.IsProducing) continue;
             if (c.Owner == PlayerId.None) continue;
+            if (s.Map.GetTileUnchecked(c.TileX, c.TileY).IsFortTile())
+            {
+                c.ProductionOrder = 0;
+                c.ProductionProgress = FP.Zero;
+                continue;
+            }
 
             UnitType type = (UnitType)(c.ProductionOrder - 1);
             int costPerUnit = UnitStats.EcoCost(type);

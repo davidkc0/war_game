@@ -93,7 +93,7 @@ public static class MapRenderer
                 int flat = r.Path[p];
                 int x = flat % state.Map.Width, y = flat / state.Map.Width;
                 TileType t = state.Map.GetTileUnchecked(x, y);
-                Color c = t == TileType.River ? Theme.BridgePreview : Theme.RoadPreview;
+                Color c = WarGame.Sim.Systems.Pathfinding.IsBridgeTerrain(t) ? Theme.BridgePreview : Theme.RoadPreview;
                 c.A *= p == r.CurrentPathIndex ? 0.85f : 0.45f;
                 Rect2 inset = new(
                     TileTopLeft(x, y, origin) + new Vector2(TilePx * 0.18f, TilePx * 0.18f),
@@ -113,7 +113,7 @@ public static class MapRenderer
                 Color bg = Theme.HudPanel; bg.A = 0.85f;
                 canvas.DrawRect(new Rect2(tl, new Vector2(barW, barH)), bg);
                 canvas.DrawRect(new Rect2(tl, new Vector2(barW * frac, barH)),
-                    t == TileType.River ? Theme.Bridge : Theme.Road);
+                    WarGame.Sim.Systems.Pathfinding.IsBridgeTerrain(t) ? Theme.Bridge : Theme.Road);
             }
         }
     }

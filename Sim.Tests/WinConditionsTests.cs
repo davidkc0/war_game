@@ -111,6 +111,30 @@ public class WinConditionsTests
     }
 
     [Fact]
+    public void Forts_DoNotCountTowardCityHoldVictory()
+    {
+        var s = BuildScenario(w: 20, h: 1);
+        s.Cities.Add(City.Create(0, 2, 0, PlayerId.Player1, isCapital: true));
+        s.Cities.Add(City.Create(1, 8, 0, PlayerId.Player2, isCapital: false));
+        s.Map.SetTile(14, 0, TileType.Fort);
+        s.Cities.Add(new City
+        {
+            Id = 2,
+            TileX = 14,
+            TileY = 0,
+            Owner = PlayerId.Player1,
+            OriginalOwner = PlayerId.Player1,
+            IsCapital = false,
+            SupplyCapacity = FortConstruction.FortSupplyCapacity,
+            CaptureHp = FortConstruction.FortCaptureHp,
+        });
+
+        s = GameSim.StepN(s, GameSim.TicksPerSecond * 30 + 5);
+
+        Assert.Equal(PlayerId.None, s.Winner);
+    }
+
+    [Fact]
     public void AfterVictory_SimFreezes()
     {
         // Once Winner is set, ticks should not advance unit positions or

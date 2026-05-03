@@ -46,6 +46,7 @@ public static class WinConditions
         for (int i = 0; i < s.Cities.Count; i++)
         {
             City c = s.Cities[i];
+            if (s.Map.GetTileUnchecked(c.TileX, c.TileY).IsFortTile()) continue;
             if (c.Owner == PlayerId.None) continue;
             owned[(int)c.Owner]++;
             total++;

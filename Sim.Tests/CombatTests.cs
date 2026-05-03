@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using WarGame.Sim;
 using WarGame.Sim.Math;
 using WarGame.Sim.State;
+using WarGame.Sim.Systems;
 using Xunit;
 
 namespace WarGame.Sim.Tests;
@@ -224,6 +225,53 @@ public class ProductionTests
             new Commands.BuildUnitCommand(0, UnitType.Light) { PlayerId = (int)PlayerId.Player2 },
         };
         s = GameSim.Step(s, cmd);
+        Assert.False(s.Cities[0].IsProducing);
+    }
+
+    [Fact]
+    public void Fort_DoesNotAccrueEco()
+    {
+        var s = BuildEmpty(3, 3);
+        s.Map.SetTile(1, 1, TileType.Fort);
+        s.Cities.Add(new City
+        {
+            Id = 0,
+            TileX = 1,
+            TileY = 1,
+            Owner = PlayerId.Player1,
+            OriginalOwner = PlayerId.Player1,
+            IsCapital = false,
+            SupplyCapacity = FortConstruction.FortSupplyCapacity,
+            CaptureHp = FortConstruction.FortCaptureHp,
+        });
+
+        s = GameSim.StepN(s, GameSim.TicksPerSecond * 5);
+
+        Assert.Equal(FP.Zero, s.Players[(int)PlayerId.Player1].Eco);
+    }
+
+    [Fact]
+    public void BuildOrder_RejectedFromFort()
+    {
+        var s = BuildEmpty(3, 3);
+        s.Map.SetTile(1, 1, TileType.Fort);
+        s.Cities.Add(new City
+        {
+            Id = 0,
+            TileX = 1,
+            TileY = 1,
+            Owner = PlayerId.Player1,
+            OriginalOwner = PlayerId.Player1,
+            IsCapital = false,
+            SupplyCapacity = FortConstruction.FortSupplyCapacity,
+            CaptureHp = FortConstruction.FortCaptureHp,
+        });
+
+        var cmd = new List<Commands.Command> {
+            new Commands.BuildUnitCommand(0, UnitType.Light) { PlayerId = (int)PlayerId.Player1 },
+        };
+        s = GameSim.Step(s, cmd);
+
         Assert.False(s.Cities[0].IsProducing);
     }
 }

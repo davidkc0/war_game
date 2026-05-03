@@ -347,7 +347,7 @@ public partial class Game : Node2D
             TileType t = _state.Map.GetTileUnchecked(x, y);
             Color c = !_roadPreviewValid
                 ? Theme.InvalidPreview
-                : t == TileType.River ? Theme.BridgePreview : Theme.RoadPreview;
+                : Pathfinding.IsBridgeTerrain(t) ? Theme.BridgePreview : Theme.RoadPreview;
             c.A *= i == _roadPreviewPath.Count - 1 ? 1.0f : 0.72f;
             Rect2 r = new(
                 MapRenderer.TileTopLeft(x, y, Vector2.Zero) + new Vector2(MapRenderer.TilePx * 0.12f, MapRenderer.TilePx * 0.12f),
@@ -421,6 +421,8 @@ public partial class Game : Node2D
         // Title — show city status.
         bool validCity = (uint)ic.MenuCityId < (uint)_state.Cities.Count;
         City c = validCity ? _state.Cities[ic.MenuCityId] : default;
+        if (validCity && _state.Map.GetTileUnchecked(c.TileX, c.TileY).IsFortTile())
+            validCity = false;
 
         string title = !validCity
             ? "Production"
@@ -591,7 +593,12 @@ public partial class Game : Node2D
     {
         int count = 0;
         for (int i = 0; i < _state.Cities.Count; i++)
-            if (_state.Cities[i].Owner == p) count++;
+        {
+            City c = _state.Cities[i];
+            if (c.Owner != p) continue;
+            if (_state.Map.GetTileUnchecked(c.TileX, c.TileY).IsFortTile()) continue;
+            count++;
+        }
         return count;
     }
 

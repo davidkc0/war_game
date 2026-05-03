@@ -44,7 +44,7 @@ war_game/
     Generation/ IntegerNoise.cs, MapGenerator.cs, BalanceValidator.cs
     GameSim.cs                ← per-tick orchestrator
     StateSerializer.cs        ← canonical hash/replay serializer
-  Sim.Tests/                 ← xUnit, runs via `dotnet test`, 158 tests
+  Sim.Tests/                 ← xUnit, runs via `dotnet test`, 164 tests
     WarGame.Sim.Tests.csproj
   src/                       ← Godot scene scripts
     Main.cs, Main.tscn        ← entry; switches to Game.tscn
@@ -97,7 +97,7 @@ A hot-seat 1v1 RTS on a procedurally generated 60×60 map (`Sim/Generation/MapGe
 - **Win conditions** (capture enemy capital OR hold ≥80% of cities for 30 consecutive seconds)
 - **Procedural maps** — `MapGenerator.Generate(seed)`: layered integer-noise elevation → rank-based land terrain assignment (plains/forest/foothill/mountain) → irregular major lowland basins + small inland lakes → mountain-water buffer enforcement → component-based tiny-water cleanup → saddle-point pass cutting through ridges → mountain-peak spine promotion along sufficiently large range interiors → one narrow river on 60×60 maps, starting in mountain country, meandering through lowlands, and flowing toward larger water bodies → city placement that keeps owned cities clustered near capitals → same-territory road networks only (no free road between enemy capitals) → BFS-based connectivity guarantee with `PunchPath` last resort
 - **Map balance scoring** — 4-axis `BalanceValidator` (path symmetry / terrain parity / choke points / connectivity), threshold ≥250/400, reject-and-retry up to 10 attempts with deterministic xorshift seed perturbation
-- **Road/bridge engineering** — selected unit + `B` enters road-build mode; hover previews the deterministic engineering path; click commits `BuildRoadCommand`; land segments cost 2 ECO/30 ticks; river bridges cost 8 ECO/90 ticks; water and mountain peaks are blocked
+- **Road/bridge engineering** — selected unit + `B` enters road-build mode; hover previews the deterministic engineering path; click commits `BuildRoadCommand`; land segments cost 2 ECO/30 ticks; bridges over rivers or 1-tile-wide waterways cost 8 ECO/90 ticks; broad water, mountain peaks, and skinny land causeways between water are blocked
 - **Visual layer**: Teal/Coral palette, Inter fallback, terrain tones, drop shadows, borders, HP bars, star icons, stack fanning, hostile-territory ring, supply status rings, victory banner, fort diamonds (amber), road/bridge previews, build progress bars, capture HP bars
 
 Performance: **1.6 ms/tick avg** with 200 units on a 60×60 map. ~18× headroom under the 30 ms budget for 30 Hz sim.
@@ -139,7 +139,7 @@ Performance: **1.6 ms/tick avg** with 200 units on a 60×60 map. ~18× headroom 
 ```bash
 cd ~/Projects/war_game
 export PATH="$HOME/.dotnet:$PATH"   # .NET 8 SDK in user profile
-dotnet test Sim.Tests/              # confirm 158/158 still green
+dotnet test Sim.Tests/              # confirm 164/164 still green
 dotnet build WarGame.csproj         # confirm Godot project builds
 open project.godot                  # or run via Godot.app, F5 to play
 ```
@@ -527,8 +527,8 @@ Each phase has a **goal**, **deliverables**, **acceptance criteria**, and **huma
 #### 3a.5 Road/bridge engineering — ✅ COMPLETE
 - `BuildRoadCommand(unit, target)` / `CancelRoadCommand(unit)`
 - Selected unit + `B` enters road-build mode; hover previews deterministic engineering path
-- Land road segments cost 2 ECO and 30 ticks; river bridge segments cost 8 ECO and 90 ticks
-- Mountain peaks and large water are blocked; forests/mountains are allowed but costly
+- Land road segments cost 2 ECO and 30 ticks; river / 1-tile-wide waterway bridge segments cost 8 ECO and 90 ticks
+- Mountain peaks, broad water, and skinny land causeways between water are blocked; forests/mountains are allowed but costly
 - Bridges render as darker tan and move/supply like roads
 
 #### 3b. Fog of war (3–4 days)

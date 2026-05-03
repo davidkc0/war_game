@@ -124,6 +124,7 @@ public static class GameSim
 
         if (c.Owner == PlayerId.None) return;
         if ((int)c.Owner != cmd.PlayerId) return;
+        if (s.Map.GetTileUnchecked(c.TileX, c.TileY).IsFortTile()) return;
 
         if (cmd.Type is null)
         {
