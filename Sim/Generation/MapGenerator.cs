@@ -506,7 +506,7 @@ public static class MapGenerator
                     int x = cx + ox, y = cy + oy;
                     if ((uint)x >= (uint)w || (uint)y >= (uint)h) continue;
                     TileType t = map.GetTileUnchecked(x, y);
-                    if (t is TileType.Water or TileType.River or TileType.Mountain or TileType.MountainPeak)
+                    if (t is TileType.Water or TileType.River or TileType.MountainPeak)
                         b.Set(x, y, TileType.Plains);
                 }
             }
@@ -537,18 +537,23 @@ public static class MapGenerator
         var waterfrontForest = new List<(int x, int y)>();
         var plains = new List<(int x, int y)>();
         var forest = new List<(int x, int y)>();
+        var mountainEdge = new List<(int x, int y)>();
         for (int y = y0; y <= y1; y++)
         {
             for (int x = x0; x <= x1; x++)
             {
                 TileType t = map.GetTileUnchecked(x, y);
-                if (t != TileType.Plains && t != TileType.Forest) continue;
+                if (!IsCityCandidateTile(map, x, y, t)) continue;
                 if (!TerrainRules.HasStableCityFootprint(map, x, y)) continue;
                 bool waterfront = IsAdjacentToWaterOrRiver(map, x, y);
                 if (t == TileType.Plains)
                 {
                     if (waterfront) waterfrontPlains.Add((x, y));
                     else plains.Add((x, y));
+                }
+                else if (t == TileType.Mountain)
+                {
+                    mountainEdge.Add((x, y));
                 }
                 else
                 {
@@ -562,6 +567,7 @@ public static class MapGenerator
         if (waterfrontForest.Count > 0) return waterfrontForest[rng.NextInt(0, waterfrontForest.Count)];
         if (plains.Count > 0) return plains[rng.NextInt(0, plains.Count)];
         if (forest.Count > 0) return forest[rng.NextInt(0, forest.Count)];
+        if (mountainEdge.Count > 0) return mountainEdge[rng.NextInt(0, mountainEdge.Count)];
 
         // Fallback: nearest stable land outside the preferred box. Returning
         // the geometric center can place a capital on water or a one-tile
@@ -589,7 +595,7 @@ public static class MapGenerator
             for (int x = x0; x <= x1; x++)
             {
                 TileType t = map.GetTileUnchecked(x, y);
-                if (t != TileType.Plains && t != TileType.Forest) continue;
+                if (!IsCityCandidateTile(map, x, y, t)) continue;
                 if (!TerrainRules.HasStableCityFootprint(map, x, y)) continue;
 
                 // Enforce maximum Manhattan distance from the capital to guarantee contiguous territory.
@@ -626,7 +632,7 @@ public static class MapGenerator
             for (int x = x0; x <= x1; x++)
             {
                 TileType t = map.GetTileUnchecked(x, y);
-                if (t != TileType.Plains && t != TileType.Forest) continue;
+                if (!IsCityCandidateTile(map, x, y, t)) continue;
                 if (!TerrainRules.HasStableCityFootprint(map, x, y)) continue;
                 int distToCap = System.Math.Abs(x - capX) + System.Math.Abs(y - capY);
                 if (distToCap > 14) continue;
@@ -665,7 +671,7 @@ public static class MapGenerator
             for (int x = 1; x < w - 1; x++)
             {
                 TileType t = map.GetTileUnchecked(x, y);
-                if (t != TileType.Plains && t != TileType.Forest) continue;
+                if (!IsCityCandidateTile(map, x, y, t)) continue;
                 if (!TerrainRules.HasStableCityFootprint(map, x, y)) continue;
 
                 int score = (System.Math.Abs(x - centerX) + System.Math.Abs(y - centerY)) * 100 + y * 10 + x;
@@ -683,7 +689,7 @@ public static class MapGenerator
             for (int x = 1; x < w - 1; x++)
             {
                 TileType t = map.GetTileUnchecked(x, y);
-                if (t is not (TileType.Plains or TileType.Forest)) continue;
+                if (!IsCityCandidateTile(map, x, y, t)) continue;
                 int score = (System.Math.Abs(x - centerX) + System.Math.Abs(y - centerY)) * 100 + y * 10 + x;
                 if (score >= bestScore) continue;
                 bestScore = score;
@@ -705,6 +711,10 @@ public static class MapGenerator
     }
 
     private static bool IsWaterOrRiver(TileType t) => t is TileType.Water or TileType.River;
+
+    private static bool IsCityCandidateTile(MapState map, int x, int y, TileType t)
+        => t is TileType.Plains or TileType.Forest
+            || (t == TileType.Mountain && TerrainRules.IsMountainEdge(map, x, y));
 
     /// <summary>
     /// Generate roads between cities owned by the same player only. Roads
@@ -782,17 +792,18 @@ public static class MapGenerator
                 int nIdx = ny * w + nx;
                 TileType t = tempMap.GetTileUnchecked(nx, ny);
                 bool endpoint = nIdx == startIdx || nIdx == targetIdx;
-                if (!IsGeneratedRoadPassable(tempMap, nx, ny, t, endpoint)) continue;
+                if (!CanGeneratedRoadEnter(tempMap, cx, cy, nx, ny, endpoint)) continue;
                 
-                // Base cost is 10. Roads follow valleys/passes and never
-                // climb over mountains or peaks.
-                if (t == TileType.Mountain || t == TileType.MountainPeak) continue;
+                // Base cost is 10. Roads follow valleys/passes, bridge only
+                // one-tile waterways, and avoid climbing into mountain
+                // interiors. Edge-mountain roads are allowed but expensive.
                 int elevCost = elev[nIdx] / 3276;
                 int cost = 10 + elevCost;
-                if (t == TileType.River) cost += 35;
+                if (TerrainRules.IsWaterway(t)) cost += 35;
+                if (t == TileType.Mountain) cost += 45;
                 
                 // Existing roads are cheap to reuse
-                if (t == TileType.Road) cost = 2;
+                if (t is TileType.Road or TileType.Bridge) cost = 2;
                 
                 if (dist[curr] + cost < dist[nIdx])
                 {
@@ -813,8 +824,17 @@ public static class MapGenerator
         {
             int cx = currPath % w, cy = currPath / w;
             TileType t = tempMap.GetTileUnchecked(cx, cy);
-            if (t != TileType.City && t != TileType.Capital && t != TileType.River
-                && IsGeneratedRoadPassable(tempMap, cx, cy, t, endpoint: false))
+            if (t is TileType.City or TileType.Capital)
+            {
+                currPath = prev[currPath];
+                continue;
+            }
+
+            if (TerrainRules.IsWaterway(t))
+            {
+                b.Set(cx, cy, TileType.Bridge);
+            }
+            else if (IsGeneratedRoadLanding(tempMap, cx, cy, t, endpoint: false))
             {
                 b.Set(cx, cy, TileType.Road);
             }
@@ -822,10 +842,36 @@ public static class MapGenerator
         }
     }
 
-    private static bool IsGeneratedRoadPassable(MapState map, int x, int y, TileType t, bool endpoint)
+    private static bool CanGeneratedRoadEnter(MapState map, int fromX, int fromY, int toX, int toY, bool endpoint)
     {
-        if (t is TileType.Water or TileType.Mountain or TileType.MountainPeak) return false;
-        if (endpoint || t is TileType.City or TileType.Capital or TileType.Road or TileType.River) return true;
+        if (!map.InBounds(fromX, fromY) || !map.InBounds(toX, toY)) return false;
+        TileType from = map.GetTileUnchecked(fromX, fromY);
+        TileType to = map.GetTileUnchecked(toX, toY);
+
+        if (TerrainRules.IsWaterway(to))
+        {
+            if (TerrainRules.IsWaterway(from)) return false;
+            if (!TerrainRules.IsOneTileWaterway(map, toX, toY)) return false;
+
+            int dx = toX - fromX, dy = toY - fromY;
+            int farX = toX + dx, farY = toY + dy;
+            if (!map.InBounds(farX, farY)) return false;
+            TileType far = map.GetTileUnchecked(farX, farY);
+            return IsGeneratedRoadLanding(map, farX, farY, far, endpoint: false);
+        }
+
+        if (TerrainRules.IsWaterway(from))
+            return IsGeneratedRoadLanding(map, toX, toY, to, endpoint);
+
+        return IsGeneratedRoadLanding(map, toX, toY, to, endpoint);
+    }
+
+    private static bool IsGeneratedRoadLanding(MapState map, int x, int y, TileType t, bool endpoint)
+    {
+        if (t == TileType.MountainPeak) return false;
+        if (TerrainRules.IsWaterway(t)) return false;
+        if (t == TileType.Mountain) return TerrainRules.IsMountainEdge(map, x, y);
+        if (endpoint || t is TileType.City or TileType.Capital or TileType.Road or TileType.Bridge) return true;
         if (TerrainRules.IsNarrowLandCauseway(map, x, y)) return false;
         return TerrainRules.HasTwoByTwoLandFootprint(map, x, y);
     }

@@ -9,6 +9,37 @@ public static class TerrainRules
     public static bool IsLandLike(TileType t)
         => !IsWaterway(t) && t != TileType.MountainPeak;
 
+    public static bool IsMountainEdge(in MapState map, int x, int y)
+    {
+        if (!map.InBounds(x, y) || map.GetTileUnchecked(x, y) != TileType.Mountain)
+            return false;
+
+        int mountainNeighbors = 0;
+        bool cardinalLowland = false;
+
+        for (int oy = -1; oy <= 1; oy++)
+        {
+            for (int ox = -1; ox <= 1; ox++)
+            {
+                if (ox == 0 && oy == 0) continue;
+                int nx = x + ox, ny = y + oy;
+                if (!map.InBounds(nx, ny)) continue;
+
+                TileType t = map.GetTileUnchecked(nx, ny);
+                if (t is TileType.Mountain or TileType.MountainPeak)
+                {
+                    mountainNeighbors++;
+                    continue;
+                }
+
+                if ((ox == 0 || oy == 0) && IsLandLike(t))
+                    cardinalLowland = true;
+            }
+        }
+
+        return cardinalLowland && mountainNeighbors <= 6;
+    }
+
     public static bool IsBroadWater(in MapState map, int x, int y)
     {
         if (!map.InBounds(x, y)) return false;
@@ -68,7 +99,8 @@ public static class TerrainRules
     {
         if (!map.InBounds(x, y)) return false;
         TileType t = map.GetTileUnchecked(x, y);
-        if (t is not (TileType.Plains or TileType.Forest or TileType.City or TileType.Capital)) return false;
+        if (t is not (TileType.Plains or TileType.Forest or TileType.Mountain or TileType.City or TileType.Capital)) return false;
+        if (t == TileType.Mountain && !IsMountainEdge(map, x, y)) return false;
         if (IsNarrowLandCauseway(map, x, y)) return false;
         if (!HasTwoByTwoLandFootprint(map, x, y)) return false;
 

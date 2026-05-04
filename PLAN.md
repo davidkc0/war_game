@@ -51,7 +51,7 @@ war_game/
     Generation/ IntegerNoise.cs, MapGenerator.cs, BalanceValidator.cs
     GameSim.cs                ← per-tick orchestrator
     StateSerializer.cs        ← canonical hash/replay serializer
-  Sim.Tests/                 ← xUnit, runs via `dotnet test`, 188 tests
+  Sim.Tests/                 ← xUnit, runs via `dotnet test`, 189 tests
     WarGame.Sim.Tests.csproj
   src/                       ← Godot scene scripts
     Main.cs, Main.tscn        ← entry; switches to Game.tscn
@@ -106,7 +106,7 @@ A hot-seat 1v1 RTS on a procedurally generated 60×60 map (`Sim/Generation/MapGe
 - **Healing** on friendly-controlled owned cities/forts only (0.5 HP/tick at 0.05 ECO/tick cost); road supply never enables healing
 - **Power projection** (additive linear-falloff; fort-aware: fort base=25, radius=6)
 - **Win conditions** (capture enemy capital OR hold ≥80% of cities for 30 consecutive seconds)
-- **Procedural maps** — `MapGenerator.Generate(seed)`: layered integer-noise elevation → rank-based land terrain assignment (plains/forest/foothill/mountain) → irregular major lowland basins + small inland lakes → mountain-water buffer enforcement → component-based tiny-water cleanup → saddle-point pass cutting through ridges → mountain-peak spine promotion along sufficiently large range interiors → one narrow river on 60×60 maps, starting in mountain country, meandering through lowlands, and flowing toward larger water bodies → city placement that keeps owned cities clustered near capitals → same-territory road networks only (no free road between enemy capitals) → BFS-based connectivity guarantee with `PunchPath` last resort
+- **Procedural maps** — `MapGenerator.Generate(seed)`: layered integer-noise elevation → rank-based land terrain assignment (plains/forest/foothill/mountain) → irregular major lowland basins + small inland lakes → mountain-water buffer enforcement → component-based tiny-water cleanup → saddle-point pass cutting through ridges → mountain-peak spine promotion along sufficiently large range interiors → one narrow river on 60×60 maps, starting in mountain country, meandering through lowlands, and flowing toward larger water bodies → city placement that keeps owned cities clustered near capitals, including valid mountain-edge city sites when needed → same-territory road networks only (no free road between enemy capitals), with generated bridges across one-tile waterways and costly edge-mountain roads → BFS-based connectivity guarantee with `PunchPath` last resort
 - **Map balance scoring** — 4-axis `BalanceValidator` (path symmetry / terrain parity / choke points / connectivity), threshold ≥250/400, reject-and-retry up to 10 attempts with deterministic xorshift seed perturbation
 - **Road/bridge engineering** — selected unit + `B` enters road-build mode; hover previews the deterministic engineering path; click commits `BuildRoadCommand`; land segments cost 2 ECO/30 ticks; bridges over rivers or 1-tile-wide waterways cost 8 ECO/90 ticks; broad water, mountain peaks, and skinny land causeways between water are blocked
 - **Fog of war** — each hot-seat player has separate Hidden / Explored / Visible tile state; friendly light units reveal radius 5, heavy units radius 4, and owned cities/capitals/forts radius 8; explored tiles show dim last-seen terrain/ownership/structures but no units; hidden tiles show no information
@@ -154,7 +154,7 @@ Performance: **1.6 ms/tick avg** with 200 units on a 60×60 map. ~18× headroom 
 ```bash
 cd ~/Projects/war_game
 export PATH="$HOME/.dotnet:$PATH"   # .NET 8 SDK in user profile
-dotnet test Sim.Tests/              # confirm 188/188 still green
+dotnet test Sim.Tests/              # confirm 189/189 still green
 dotnet build WarGame.csproj         # confirm Godot project builds
 open project.godot                  # or run via Godot.app, F5 to play
 ```
@@ -178,7 +178,7 @@ To add a new sim system:
 - **Why water is carved after land terrain**: early versions assigned the lowest terrain ranks as water. That produced statistical water, not geography: oceans became ruler-straight top/right bands and rivers became short drainage cuts. `MapGenerator` now assigns land by rank, then carves irregular lowland basins and smaller inland lakes. Full map-edge oceans are deferred until a better coast/continent model exists.
 - **Peaks are promoted as spines, not dots**: `MapGenerator` promotes medial-axis tiles of sufficiently large mountain components, so peaks read as ridgelines along the center of a range rather than isolated edge artifacts.
 - **Roads are internal logistics**: generated roads only connect cities owned by the same player. There is intentionally no paved road between both territories; later unit-built roads/bridges make cross-front engineering a player action.
-- **Rivers are distinct from lakes/coasts**: `TileType.River` is passable but slow and bad for defense. Rivers must be one tile wide, long enough to read as rivers, visibly touch mountain country at the source, avoid straight canal runs, and reach larger water bodies. Generated roads do not overwrite rivers; player-built engineering now converts river segments to `TileType.Bridge`.
+- **Rivers are distinct from lakes/coasts**: `TileType.River` is passable but slow and bad for defense. Rivers must be one tile wide, long enough to read as rivers, visibly touch mountain country at the source, avoid straight canal runs, and reach larger water bodies. Generated roads may bridge one-tile waterways, including rivers, by converting that crossing tile to `TileType.Bridge`; tests treat bridges as hydrology continuity for river validation.
 - **Startup territory is precomputed**: `Game._Ready()` calls `PowerProjection.Tick(ref _state)` after procgen initialization so the first rendered frame starts with authoritative contiguous ownership instead of an empty/one-tick-stale `TileOwner` buffer.
 - **`IntegerNoise` takes `SimRng` by ref** in its constructor. An earlier version took it by value, which (because `SimRng` is a struct) meant two noise instances built from the same outer rng got identical permutation tables — elevation and moisture noise were perfectly correlated rather than independent channels. Fixed during Phase 2 cleanup.
 - **Validator's path-symmetry axis** uses BFS distance, not Euclidean. The score drops smoothly from 100 (≤20% imbalance) to 0 (≥80% imbalance). Most generated maps land in the 70–95 range.

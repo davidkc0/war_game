@@ -161,7 +161,7 @@ public class MapGeneratorTests
     public void Generated_HasMixOfTerrainTypes()
     {
         var result = MapGenerator.Generate(42);
-        int plains = 0, forest = 0, mountain = 0, peak = 0, water = 0, river = 0, road = 0;
+        int plains = 0, forest = 0, mountain = 0, peak = 0, water = 0, river = 0, road = 0, bridge = 0;
 
         for (int i = 0; i < result.Map.TileCount; i++)
         {
@@ -174,6 +174,7 @@ public class MapGeneratorTests
                 case TileType.Water: water++; break;
                 case TileType.River: river++; break;
                 case TileType.Road: road++; break;
+                case TileType.Bridge: bridge++; break;
             }
         }
 
@@ -184,7 +185,7 @@ public class MapGeneratorTests
         Assert.True(peak > 1, $"mountain peaks should form spines, not single dots: {peak}");
         Assert.True(water > 100, $"too little visible water: {water}");
         Assert.True(river > 10, $"too little river terrain: {river}");
-        Assert.True(road > 10, $"too few roads: {road}");
+        Assert.True(road + bridge > 10, $"too few roads/bridges: roads={road}, bridges={bridge}");
     }
 
     [Fact]
@@ -330,7 +331,7 @@ public class MapGeneratorTests
             var result = MapGenerator.Generate((ulong)(seed * 1000 + 7));
             int roadTiles = 0;
             for (int i = 0; i < result.Map.TileCount; i++)
-                if ((TileType)result.Map.RawTiles[i] == TileType.Road) roadTiles++;
+                if ((TileType)result.Map.RawTiles[i] is TileType.Road or TileType.Bridge) roadTiles++;
             Assert.True(roadTiles >= 8, $"seed {seed}: expected visible same-territory roads, got {roadTiles}");
 
             Assert.True(RoadOrRiverReachable(result.Map, result.Cities[0].TileX, result.Cities[0].TileY,
@@ -382,6 +383,24 @@ public class MapGeneratorTests
     }
 
     [Fact]
+    public void Generated_BridgesOnlySpanOneTileWaterways()
+    {
+        for (int seed = 0; seed < 20; seed++)
+        {
+            var result = MapGenerator.Generate((ulong)(seed * 1000 + 7));
+            for (int y = 0; y < result.Map.Height; y++)
+            {
+                for (int x = 0; x < result.Map.Width; x++)
+                {
+                    if (result.Map.GetTileUnchecked(x, y) != TileType.Bridge) continue;
+                    Assert.True(BridgeHasOppositeLandings(result.Map, x, y),
+                        $"seed {seed}: generated bridge at ({x},{y}) is not spanning a one-tile waterway");
+                }
+            }
+        }
+    }
+
+    [Fact]
     public void Generated_RiversStartInMountainsAndFlowToWater()
     {
         for (int seed = 0; seed < 20; seed++)
@@ -394,8 +413,9 @@ public class MapGeneratorTests
             {
                 for (int x = 0; x < result.Map.Width; x++)
                 {
-                    if (result.Map.GetTileUnchecked(x, y) != TileType.River) continue;
-                    riverTiles++;
+                    TileType t = result.Map.GetTileUnchecked(x, y);
+                    if (!IsRiverContinuityTile(t)) continue;
+                    if (t == TileType.River) riverTiles++;
                     if (HasNeighbor(result.Map, x, y, TileType.Mountain)
                         || HasNeighbor(result.Map, x, y, TileType.MountainPeak))
                         riverTouchesMountain = true;
@@ -423,7 +443,7 @@ public class MapGeneratorTests
                 if (visited[i]) continue;
                 int x = i % w, y = i / w;
                 if (result.Map.GetTileUnchecked(x, y) != TileType.River) continue;
-                int size = CountTileComponent(result.Map, i, TileType.River, visited);
+                int size = CountRiverComponent(result.Map, i, visited);
                 Assert.True(size >= 10,
                     $"seed {seed}: river component at ({x},{y}) is only {size} tiles and reads as a pool");
             }
@@ -611,6 +631,34 @@ public class MapGeneratorTests
         return count;
     }
 
+    private static int CountRiverComponent(MapState map, int start, bool[] visited)
+    {
+        int w = map.Width, h = map.Height;
+        var queue = new Queue<int>();
+        int[] dx = { 0, 1, 0, -1 };
+        int[] dy = { -1, 0, 1, 0 };
+        int count = 0;
+        visited[start] = true;
+        queue.Enqueue(start);
+        while (queue.Count > 0)
+        {
+            int idx = queue.Dequeue();
+            count++;
+            int x = idx % w, y = idx / w;
+            for (int k = 0; k < 4; k++)
+            {
+                int nx = x + dx[k], ny = y + dy[k];
+                if ((uint)nx >= (uint)w || (uint)ny >= (uint)h) continue;
+                int nIdx = ny * w + nx;
+                if (visited[nIdx]) continue;
+                if (!IsRiverContinuityTile(map.GetTileUnchecked(nx, ny))) continue;
+                visited[nIdx] = true;
+                queue.Enqueue(nIdx);
+            }
+        }
+        return count;
+    }
+
     private static bool RoadReachable(MapState map, int sx, int sy, int tx, int ty)
     {
         int w = map.Width, h = map.Height;
@@ -634,7 +682,7 @@ public class MapGeneratorTests
                 int nIdx = ny * w + nx;
                 if (visited[nIdx]) continue;
                 TileType t = map.GetTileUnchecked(nx, ny);
-                if (t != TileType.Road && t != TileType.City && t != TileType.Capital) continue;
+                if (t != TileType.Road && t != TileType.Bridge && t != TileType.City && t != TileType.Capital) continue;
                 visited[nIdx] = true;
                 queue.Enqueue(nIdx);
             }
@@ -665,7 +713,7 @@ public class MapGeneratorTests
                 int nIdx = ny * w + nx;
                 if (visited[nIdx]) continue;
                 TileType t = map.GetTileUnchecked(nx, ny);
-                if (t != TileType.Road && t != TileType.River && t != TileType.City && t != TileType.Capital) continue;
+                if (t != TileType.Road && t != TileType.Bridge && t != TileType.River && t != TileType.City && t != TileType.Capital) continue;
                 visited[nIdx] = true;
                 queue.Enqueue(nIdx);
             }
@@ -680,6 +728,27 @@ public class MapGeneratorTests
         if (y > 0 && map.GetTileUnchecked(x, y - 1) == tile) return true;
         if (y + 1 < map.Height && map.GetTileUnchecked(x, y + 1) == tile) return true;
         return false;
+    }
+
+    private static bool IsRiverContinuityTile(TileType t)
+        => t is TileType.River or TileType.Bridge;
+
+    private static bool BridgeHasOppositeLandings(MapState map, int x, int y)
+    {
+        bool eastWest =
+            IsBridgeLanding(map, x - 1, y)
+            && IsBridgeLanding(map, x + 1, y);
+        bool northSouth =
+            IsBridgeLanding(map, x, y - 1)
+            && IsBridgeLanding(map, x, y + 1);
+        return eastWest || northSouth;
+    }
+
+    private static bool IsBridgeLanding(MapState map, int x, int y)
+    {
+        if (!map.InBounds(x, y)) return false;
+        TileType t = map.GetTileUnchecked(x, y);
+        return t is not (TileType.Water or TileType.River or TileType.MountainPeak);
     }
 
     private static bool HasOppositeMountainNeighbors(MapState map, int x, int y)

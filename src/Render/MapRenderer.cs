@@ -32,6 +32,119 @@ public static class MapRenderer
     public const float CityMarkerHalf  = TilePx * 0.40f;
     public const float CapitalMarkerHalf = TilePx * 0.46f;
 
+    private static readonly string[] CapitalOverlayPaths =
+    [
+        "res://assets/images/capital.png",
+        "res://assets/images/captial.png",
+    ];
+    private static readonly string[] CityOverlayPaths =
+    [
+        "res://assets/images/city.png",
+    ];
+    private static readonly string[] ForestTilePaths =
+    [
+        "res://assets/images/forest.png",
+    ];
+    private static readonly string[] PlainsTilePaths =
+    [
+        "res://assets/images/plains.png",
+    ];
+    private static readonly string[] WaterTilePaths =
+    [
+        "res://assets/images/water.png",
+    ];
+    private static readonly string[] BridgeTilePaths =
+    [
+        "res://assets/images/bridge.png",
+    ];
+    private static readonly string[] MountainTilePaths =
+    [
+        "res://assets/images/mountains.png",
+        "res://assets/images/mountain.png",
+    ];
+    private static readonly string[] PeakTilePaths =
+    [
+        "res://assets/images/peak.png",
+        "res://assets/images/peak1.png",
+        "res://assets/images/peaj.png",
+    ];
+    private static readonly string[] FortOverlayPaths =
+    [
+        "res://assets/images/fort.png",
+        "res://assets/images/for.png",
+    ];
+    private static readonly string[] RoadStraightPaths =
+    [
+        "res://assets/images/road_straight.png",
+    ];
+    private static readonly string[] RoadDeadEndPaths =
+    [
+        "res://assets/images/road_deadend.png",
+    ];
+    private static readonly string[] RoadTriCrossSouthPaths =
+    [
+        "res://assets/images/road_tricross_south.png",
+    ];
+    private static readonly string[] RoadTriCrossNorthPaths =
+    [
+        "res://assets/images/road_tricross_north.png",
+    ];
+    private static readonly string[] RoadCrossPaths =
+    [
+        "res://assets/images/road_cross.png",
+    ];
+    private static readonly string[] RoadCurveRightPaths =
+    [
+        "res://assets/images/road_curve_right.png",
+    ];
+    private static readonly string[] RoadCurveLeftPaths =
+    [
+        "res://assets/images/road_curve_left.png",
+    ];
+    private static Texture2D? _capitalOverlay;
+    private static bool _capitalOverlayLoadAttempted;
+    private static Texture2D? _cityOverlay;
+    private static bool _cityOverlayLoadAttempted;
+    private static Texture2D? _forestTile;
+    private static bool _forestTileLoadAttempted;
+    private static Texture2D? _plainsTile;
+    private static bool _plainsTileLoadAttempted;
+    private static Texture2D? _waterTile;
+    private static bool _waterTileLoadAttempted;
+    private static Texture2D? _bridgeTile;
+    private static bool _bridgeTileLoadAttempted;
+    private static Texture2D? _mountainTile;
+    private static bool _mountainTileLoadAttempted;
+    private static Texture2D? _peakTile;
+    private static bool _peakTileLoadAttempted;
+    private static Texture2D? _fortOverlay;
+    private static bool _fortOverlayLoadAttempted;
+    private static Texture2D? _roadStraight;
+    private static bool _roadStraightLoadAttempted;
+    private static Texture2D? _roadDeadEnd;
+    private static bool _roadDeadEndLoadAttempted;
+    private static Texture2D? _roadTriCrossSouth;
+    private static bool _roadTriCrossSouthLoadAttempted;
+    private static Texture2D? _roadTriCrossNorth;
+    private static bool _roadTriCrossNorthLoadAttempted;
+    private static Texture2D? _roadCross;
+    private static bool _roadCrossLoadAttempted;
+    private static Texture2D? _roadCurveRight;
+    private static bool _roadCurveRightLoadAttempted;
+    private static Texture2D? _roadCurveLeft;
+    private static bool _roadCurveLeftLoadAttempted;
+    private static readonly Dictionary<(ulong Id, TileSpriteTransform Transform), Texture2D> _transformedTextures = new();
+
+    private enum TileSpriteTransform : byte
+    {
+        None,
+        FlipX,
+        FlipY,
+        FlipXY,
+        RotateClockwise,
+        RotateCounterClockwise,
+    }
+
     public static Vector2 TileTopLeft(int tileX, int tileY, Vector2 origin)
         => origin + new Vector2(tileX * TilePx, tileY * TilePx);
 
@@ -77,6 +190,7 @@ public static class MapRenderer
         DrawTerrain(canvas, state, origin, viewer);
         DrawTerritoryFill(canvas, state, origin, viewer);
         DrawBorders(canvas, state, origin, viewer);
+        DrawBridges(canvas, state, origin, viewer);
         DrawCities(canvas, state, origin, viewer);
         DrawPendingForts(canvas, state, origin, viewer);
         DrawPendingRoads(canvas, state, origin, viewer);
@@ -146,6 +260,30 @@ public static class MapRenderer
                 // Base fill.
                 Rect2 full = new(tl, new Vector2(TilePx, TilePx));
                 canvas.DrawRect(full, baseColor);
+
+                if (vis != VisibilityState.Hidden)
+                {
+                    Texture2D? terrain = TerrainTileTexture(t);
+                    if (terrain is not null)
+                    {
+                        Color modulate = vis == VisibilityState.Explored
+                            ? new Color(0.48f, 0.48f, 0.48f, 0.72f)
+                            : new Color(1f, 1f, 1f, 1f);
+                        canvas.DrawTextureRect(terrain, full, false, modulate);
+                    }
+
+                    if (t == TileType.Road)
+                    {
+                        (Texture2D? road, TileSpriteTransform transform) = RoadTileTexture(state, viewer, x, y);
+                        if (road is not null)
+                        {
+                            Color modulate = vis == VisibilityState.Explored
+                                ? new Color(0.48f, 0.48f, 0.48f, 0.72f)
+                                : new Color(1f, 1f, 1f, 1f);
+                            DrawTileTexture(canvas, road, full, modulate, transform);
+                        }
+                    }
+                }
 
                 // Subtle depth: 1-px top/left edge highlight and 1-px
                 // bottom/right edge shadow to complete the grid look.
@@ -228,6 +366,56 @@ public static class MapRenderer
         }
     }
 
+    // -------- 3b) Bridge overlays ----------------------------------------
+    private static void DrawBridges(CanvasItem canvas, in GameState state, Vector2 origin, PlayerId viewer)
+    {
+        Texture2D? bridge = BridgeTileTexture();
+        if (bridge is null) return;
+
+        for (int y = 0; y < state.Map.Height; y++)
+        {
+            for (int x = 0; x < state.Map.Width; x++)
+            {
+                VisibilityState vis = FogOfWar.GetVisibility(state, viewer, x, y);
+                if (vis == VisibilityState.Hidden) continue;
+
+                TileType t = FogOfWar.GetKnownTileType(state, viewer, x, y);
+                if (t != TileType.Bridge) continue;
+
+                Color modulate = vis == VisibilityState.Explored
+                    ? new Color(0.48f, 0.48f, 0.48f, 0.72f)
+                    : new Color(1f, 1f, 1f, 1f);
+                Rect2 full = new(TileTopLeft(x, y, origin), new Vector2(TilePx, TilePx));
+                TileSpriteTransform transform = BridgeTransform(state, viewer, x, y);
+                DrawBridgeDeckUnderlay(canvas, full, transform, vis);
+                DrawTileTexture(canvas, bridge, full, modulate, transform);
+            }
+        }
+    }
+
+    private static void DrawBridgeDeckUnderlay(
+        CanvasItem canvas,
+        Rect2 full,
+        TileSpriteTransform transform,
+        VisibilityState vis)
+    {
+        bool horizontal = transform == TileSpriteTransform.RotateClockwise
+            || transform == TileSpriteTransform.RotateCounterClockwise;
+
+        Color deck = Theme.Road;
+        deck.A = vis == VisibilityState.Explored ? 0.44f : 0.94f;
+
+        Rect2 deckRect = horizontal
+            ? new Rect2(
+                full.Position + new Vector2(0f, TilePx * 0.28f),
+                new Vector2(TilePx, TilePx * 0.44f))
+            : new Rect2(
+                full.Position + new Vector2(TilePx * 0.28f, 0f),
+                new Vector2(TilePx * 0.44f, TilePx));
+
+        canvas.DrawRect(deckRect, deck);
+    }
+
     // -------- 4) Cities & Forts -----------------------------------------
     private static void DrawCities(CanvasItem canvas, in GameState state, Vector2 origin, PlayerId viewer)
     {
@@ -245,29 +433,57 @@ public static class MapRenderer
             TileType tileTy = state.Map.GetTileUnchecked(c.TileX, c.TileY);
             bool isFort = tileTy == WarGame.Sim.State.TileType.Fort;
 
-            float half = c.IsCapital ? CapitalMarkerHalf : CityMarkerHalf;
-            if (isFort) half = CityMarkerHalf * 0.85f;
+            float half = isFort ? CityMarkerHalf * 0.85f : CapitalMarkerHalf;
 
             if (isFort)
             {
-                // Diamond = rotated square. Draw as 4-point polygon.
-                DrawDiamond(canvas, center, half, owner);
+                Rect2 marker = new(TileTopLeft(c.TileX, c.TileY, origin), new Vector2(TilePx, TilePx));
+                Rect2 shadow = new(marker.Position + new Vector2(0, 2), marker.Size);
+                canvas.DrawRect(shadow, new Color(0, 0, 0, 0.35f));
+                canvas.DrawRect(marker, owner);
+
+                Texture2D? fort = FortOverlayTexture();
+                if (fort is not null)
+                {
+                    canvas.DrawTextureRect(fort, marker, false);
+                }
+                else
+                {
+                    // Diamond = rotated square. Draw as 4-point polygon.
+                    DrawDiamond(canvas, center, half, owner);
+                }
             }
             else
             {
+                Texture2D? cityOverlay = c.IsCapital ? null : CityOverlayTexture();
+                Rect2 marker = new(TileTopLeft(c.TileX, c.TileY, origin), new Vector2(TilePx, TilePx));
+
                 // Subtle drop shadow.
-                Rect2 shadow = new(center - new Vector2(half, half) + new Vector2(0, 2),
-                                   new Vector2(half * 2, half * 2));
+                Rect2 shadow = new(marker.Position + new Vector2(0, 2), marker.Size);
                 canvas.DrawRect(shadow, new Color(0, 0, 0, 0.35f));
 
-                Rect2 marker = new(center - new Vector2(half, half),
-                                   new Vector2(half * 2, half * 2));
                 canvas.DrawRect(marker, owner);
 
-                // Capital marked with a 5-pointed star.
+                // Capital overlay uses the supplied transparent sprite over
+                // the owner-colored underlay. Fallback keeps dev builds usable
+                // before Godot imports the PNG.
                 if (c.IsCapital)
-                    DrawStar(canvas, center, half * 0.78f, half * 0.34f,
-                        Theme.ForPlayerDim(c.Owner));
+                {
+                    Texture2D? overlay = CapitalOverlayTexture();
+                    if (overlay is not null)
+                    {
+                        canvas.DrawTextureRect(overlay, marker, false);
+                    }
+                    else
+                    {
+                        DrawStar(canvas, center, half * 0.78f, half * 0.34f,
+                            Theme.ForPlayerDim(c.Owner));
+                    }
+                }
+                else if (cityOverlay is not null)
+                {
+                    canvas.DrawTextureRect(cityOverlay, marker, false);
+                }
             }
 
             // Production progress bar above the city (only when producing).
@@ -320,7 +536,17 @@ public static class MapRenderer
             ghost.A = 0.4f; // Semi-transparent ghost
 
             float half = CityMarkerHalf * 0.85f;
-            DrawDiamond(canvas, center, half, ghost);
+            Texture2D? fort = FortOverlayTexture();
+            if (fort is not null)
+            {
+                Rect2 marker = new(TileTopLeft(f.TileX, f.TileY, origin), new Vector2(TilePx, TilePx));
+                canvas.DrawRect(marker, ghost);
+                canvas.DrawTextureRect(fort, marker, false, new Color(1f, 1f, 1f, 0.48f));
+            }
+            else
+            {
+                DrawDiamond(canvas, center, half, ghost);
+            }
 
             // Build progress bar above the ghost.
             float frac = 1f - Mathf.Clamp((float)f.TicksRemaining / WarGame.Sim.Systems.FortConstruction.FortBuildTicks, 0f, 1f);
@@ -369,18 +595,50 @@ public static class MapRenderer
                 Vector2 center = TileCenter(x, y, origin);
                 if (remembered.IsFortTile())
                 {
-                    DrawDiamond(canvas, center, CityMarkerHalf * 0.72f, owner);
+                    Texture2D? fort = FortOverlayTexture();
+                    if (fort is not null)
+                    {
+                        Rect2 fortMarker = new(TileTopLeft(x, y, origin), new Vector2(TilePx, TilePx));
+                        canvas.DrawRect(fortMarker, owner);
+                        canvas.DrawTextureRect(fort, fortMarker, false, new Color(0.52f, 0.52f, 0.52f, 0.62f));
+                    }
+                    else
+                    {
+                        DrawDiamond(canvas, center, CityMarkerHalf * 0.72f, owner);
+                    }
                     continue;
                 }
 
-                float half = remembered == TileType.Capital ? CapitalMarkerHalf : CityMarkerHalf;
-                half *= 0.78f;
-                Rect2 marker = new(center - new Vector2(half, half),
-                                   new Vector2(half * 2, half * 2));
-                canvas.DrawRect(marker, owner);
                 if (remembered == TileType.Capital)
-                    DrawStar(canvas, center, half * 0.76f, half * 0.33f,
-                        Dim(Theme.ForPlayerDim(ownerId), 0.62f));
+                {
+                    float half = CapitalMarkerHalf * 0.78f;
+                    Rect2 marker = new(TileTopLeft(x, y, origin), new Vector2(TilePx, TilePx));
+                    canvas.DrawRect(marker, owner);
+                    Texture2D? overlay = CapitalOverlayTexture();
+                    if (overlay is not null)
+                    {
+                        canvas.DrawTextureRect(overlay, marker, false, new Color(0.52f, 0.52f, 0.52f, 0.62f));
+                    }
+                    else
+                    {
+                        DrawStar(canvas, center, half * 0.76f, half * 0.33f,
+                            Dim(Theme.ForPlayerDim(ownerId), 0.62f));
+                    }
+                    continue;
+                }
+
+                Texture2D? city = CityOverlayTexture();
+                if (city is not null)
+                {
+                    Rect2 cityMarker = new(TileTopLeft(x, y, origin), new Vector2(TilePx, TilePx));
+                    canvas.DrawRect(cityMarker, owner);
+                    canvas.DrawTextureRect(city, cityMarker, false, new Color(0.52f, 0.52f, 0.52f, 0.62f));
+                }
+                else
+                {
+                    Rect2 marker = new(TileTopLeft(x, y, origin), new Vector2(TilePx, TilePx));
+                    canvas.DrawRect(marker, owner);
+                }
             }
         }
     }
@@ -642,6 +900,223 @@ public static class MapRenderer
 
     private static Color Dim(Color c, float factor)
         => new(c.R * factor, c.G * factor, c.B * factor, c.A);
+
+    private static Texture2D? CapitalOverlayTexture()
+        => LoadFirstTexture(CapitalOverlayPaths, ref _capitalOverlay, ref _capitalOverlayLoadAttempted);
+
+    private static Texture2D? CityOverlayTexture()
+        => LoadFirstTexture(CityOverlayPaths, ref _cityOverlay, ref _cityOverlayLoadAttempted);
+
+    private static Texture2D? ForestTileTexture()
+        => LoadFirstTexture(ForestTilePaths, ref _forestTile, ref _forestTileLoadAttempted);
+
+    private static Texture2D? PlainsTileTexture()
+        => LoadFirstTexture(PlainsTilePaths, ref _plainsTile, ref _plainsTileLoadAttempted);
+
+    private static Texture2D? WaterTileTexture()
+        => LoadFirstTexture(WaterTilePaths, ref _waterTile, ref _waterTileLoadAttempted);
+
+    private static Texture2D? BridgeTileTexture()
+        => LoadFirstTexture(BridgeTilePaths, ref _bridgeTile, ref _bridgeTileLoadAttempted);
+
+    private static Texture2D? MountainTileTexture()
+        => LoadFirstTexture(MountainTilePaths, ref _mountainTile, ref _mountainTileLoadAttempted);
+
+    private static Texture2D? PeakTileTexture()
+        => LoadFirstTexture(PeakTilePaths, ref _peakTile, ref _peakTileLoadAttempted);
+
+    private static Texture2D? FortOverlayTexture()
+        => LoadFirstTexture(FortOverlayPaths, ref _fortOverlay, ref _fortOverlayLoadAttempted);
+
+    private static Texture2D? RoadStraightTexture()
+        => LoadFirstTexture(RoadStraightPaths, ref _roadStraight, ref _roadStraightLoadAttempted);
+
+    private static Texture2D? RoadDeadEndTexture()
+        => LoadFirstTexture(RoadDeadEndPaths, ref _roadDeadEnd, ref _roadDeadEndLoadAttempted);
+
+    private static Texture2D? RoadTriCrossSouthTexture()
+        => LoadFirstTexture(RoadTriCrossSouthPaths, ref _roadTriCrossSouth, ref _roadTriCrossSouthLoadAttempted);
+
+    private static Texture2D? RoadTriCrossNorthTexture()
+        => LoadFirstTexture(RoadTriCrossNorthPaths, ref _roadTriCrossNorth, ref _roadTriCrossNorthLoadAttempted);
+
+    private static Texture2D? RoadCrossTexture()
+        => LoadFirstTexture(RoadCrossPaths, ref _roadCross, ref _roadCrossLoadAttempted);
+
+    private static Texture2D? RoadCurveRightTexture()
+        => LoadFirstTexture(RoadCurveRightPaths, ref _roadCurveRight, ref _roadCurveRightLoadAttempted);
+
+    private static Texture2D? RoadCurveLeftTexture()
+        => LoadFirstTexture(RoadCurveLeftPaths, ref _roadCurveLeft, ref _roadCurveLeftLoadAttempted);
+
+    private static Texture2D? TerrainTileTexture(TileType tile) => tile switch
+    {
+        TileType.Plains or TileType.City or TileType.Capital => PlainsTileTexture(),
+        TileType.Forest => ForestTileTexture(),
+        TileType.Water or TileType.River or TileType.Bridge => WaterTileTexture(),
+        TileType.Mountain => MountainTileTexture(),
+        TileType.MountainPeak => PeakTileTexture(),
+        _ => null,
+    };
+
+    private static (Texture2D? Texture, TileSpriteTransform Transform) RoadTileTexture(
+        in GameState state,
+        PlayerId viewer,
+        int x,
+        int y)
+    {
+        bool n = RoadConnects(state, viewer, x, y - 1, out bool nStructure);
+        bool e = RoadConnects(state, viewer, x + 1, y, out bool eStructure);
+        bool s = RoadConnects(state, viewer, x, y + 1, out bool sStructure);
+        bool w = RoadConnects(state, viewer, x - 1, y, out bool wStructure);
+
+        int count = (n ? 1 : 0) + (e ? 1 : 0) + (s ? 1 : 0) + (w ? 1 : 0);
+        if (count >= 4)
+            return (RoadCrossTexture(), TileSpriteTransform.None);
+
+        if (count == 3)
+        {
+            if (!n) return (RoadTriCrossSouthTexture(), TileSpriteTransform.None);
+            if (!s) return (RoadTriCrossNorthTexture(), TileSpriteTransform.None);
+            if (!e) return (RoadTriCrossSouthTexture(), TileSpriteTransform.RotateClockwise);
+            return (RoadTriCrossSouthTexture(), TileSpriteTransform.RotateCounterClockwise);
+        }
+
+        if (count == 2)
+        {
+            if (n && s) return (RoadStraightTexture(), TileSpriteTransform.None);
+            if (e && w) return (RoadStraightTexture(), TileSpriteTransform.RotateClockwise);
+            if (s && e) return (RoadCurveRightTexture(), TileSpriteTransform.None);
+            if (s && w) return RoadCurveLeftOrMirrored(TileSpriteTransform.None, TileSpriteTransform.FlipX);
+            if (n && e) return (RoadCurveRightTexture(), TileSpriteTransform.FlipY);
+            return RoadCurveLeftOrMirrored(TileSpriteTransform.FlipY, TileSpriteTransform.FlipXY);
+        }
+
+        if (count == 1)
+        {
+            bool endsAtStructure = (n && nStructure) || (e && eStructure) || (s && sStructure) || (w && wStructure);
+            Texture2D? texture = endsAtStructure ? RoadStraightTexture() : RoadDeadEndTexture();
+            return (texture, SingleRoadTransform(n, e, s, w, endsAtStructure));
+        }
+
+        return (RoadDeadEndTexture(), TileSpriteTransform.None);
+    }
+
+    private static (Texture2D? Texture, TileSpriteTransform Transform) RoadCurveLeftOrMirrored(
+        TileSpriteTransform leftTransform,
+        TileSpriteTransform mirroredRightTransform)
+    {
+        Texture2D? left = RoadCurveLeftTexture();
+        if (left is not null) return (left, leftTransform);
+        return (RoadCurveRightTexture(), mirroredRightTransform);
+    }
+
+    private static TileSpriteTransform SingleRoadTransform(bool n, bool e, bool s, bool w, bool straight)
+    {
+        if (straight) return (e || w) ? TileSpriteTransform.RotateClockwise : TileSpriteTransform.None;
+        if (s) return TileSpriteTransform.None;
+        if (n) return TileSpriteTransform.FlipY;
+        if (e) return TileSpriteTransform.RotateCounterClockwise;
+        return TileSpriteTransform.RotateClockwise;
+    }
+
+    private static TileSpriteTransform BridgeTransform(in GameState state, PlayerId viewer, int x, int y)
+    {
+        bool n = RoadConnects(state, viewer, x, y - 1, out _);
+        bool e = RoadConnects(state, viewer, x + 1, y, out _);
+        bool s = RoadConnects(state, viewer, x, y + 1, out _);
+        bool w = RoadConnects(state, viewer, x - 1, y, out _);
+
+        int vertical = (n ? 1 : 0) + (s ? 1 : 0);
+        int horizontal = (e ? 1 : 0) + (w ? 1 : 0);
+        return horizontal > vertical
+            ? TileSpriteTransform.RotateClockwise
+            : TileSpriteTransform.None;
+    }
+
+    private static bool RoadConnects(in GameState state, PlayerId viewer, int x, int y, out bool structure)
+    {
+        structure = false;
+        if (!state.Map.InBounds(x, y)) return false;
+        if (FogOfWar.GetVisibility(state, viewer, x, y) == VisibilityState.Hidden) return false;
+
+        TileType t = FogOfWar.GetKnownTileType(state, viewer, x, y);
+        structure = t is TileType.City or TileType.Capital or TileType.Fort;
+        return structure || t is TileType.Road or TileType.Bridge;
+    }
+
+    private static void DrawTileTexture(
+        CanvasItem canvas,
+        Texture2D texture,
+        Rect2 rect,
+        Color modulate,
+        TileSpriteTransform transform)
+    {
+        Texture2D? drawTexture = TransformedTexture(texture, transform);
+        if (drawTexture is null) return;
+        canvas.DrawTextureRect(drawTexture, rect, false, modulate);
+    }
+
+    private static Texture2D? TransformedTexture(Texture2D texture, TileSpriteTransform transform)
+    {
+        if (transform == TileSpriteTransform.None) return texture;
+
+        var key = (texture.GetInstanceId(), transform);
+        if (_transformedTextures.TryGetValue(key, out Texture2D? cached))
+            return cached;
+
+        Image? image = texture.GetImage();
+        if (image is null || image.GetWidth() <= 0 || image.GetHeight() <= 0)
+            return texture;
+
+        switch (transform)
+        {
+            case TileSpriteTransform.FlipX:
+                image.FlipX();
+                break;
+            case TileSpriteTransform.FlipY:
+                image.FlipY();
+                break;
+            case TileSpriteTransform.FlipXY:
+                image.FlipX();
+                image.FlipY();
+                break;
+            case TileSpriteTransform.RotateClockwise:
+                image.Rotate90(ClockDirection.Clockwise);
+                break;
+            case TileSpriteTransform.RotateCounterClockwise:
+                image.Rotate90(ClockDirection.Counterclockwise);
+                break;
+        }
+
+        Texture2D transformed = ImageTexture.CreateFromImage(image);
+        _transformedTextures[key] = transformed;
+        return transformed;
+    }
+
+    private static Texture2D? LoadFirstTexture(string[] paths, ref Texture2D? texture, ref bool loadAttempted)
+    {
+        if (loadAttempted) return texture;
+
+        loadAttempted = true;
+        foreach (string path in paths)
+        {
+            texture = GD.Load<Texture2D>(path);
+            texture ??= LoadTextureFromFile(path);
+            if (texture is not null) break;
+        }
+
+        return texture;
+    }
+
+    private static ImageTexture? LoadTextureFromFile(string path)
+    {
+        Image? image = Image.LoadFromFile(path);
+        if (image is null || image.GetWidth() <= 0 || image.GetHeight() <= 0)
+            return null;
+
+        return ImageTexture.CreateFromImage(image);
+    }
 
     private static void DrawStar(CanvasItem canvas, Vector2 center, float outerR, float innerR, Color color)
     {
