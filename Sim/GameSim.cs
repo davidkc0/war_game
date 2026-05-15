@@ -48,6 +48,15 @@ public static class GameSim
                     case BuildUnitCommand b:
                         ApplyBuildUnit(ref s, b);
                         break;
+                    case SetAutoBuildCommand ab:
+                        ApplySetAutoBuild(ref s, ab);
+                        break;
+                    case UpgradeCityCommand uc:
+                        ApplyUpgradeCity(ref s, uc);
+                        break;
+                    case CancelCityUpgradeCommand cu:
+                        ApplyCancelCityUpgrade(ref s, cu);
+                        break;
                     case RenameCityCommand rc:
                         ApplyRenameCity(ref s, rc);
                         break;
@@ -114,12 +123,24 @@ public static class GameSim
         if (!s.Map.InBounds(cmd.TargetX, cmd.TargetY)) return;
 
         bool isHeavy = u.Type == UnitType.Heavy;
-        var path = Pathfinding.FindPath(s.Map, u.TileX, u.TileY, cmd.TargetX, cmd.TargetY, isHeavy);
+        bool wasMoving = u.Path is { Count: > 0 };
+        int firstStep = wasMoving ? u.Path[0] : -1;
+        int pathStartX = wasMoving ? firstStep % s.Map.Width : u.TileX;
+        int pathStartY = wasMoving ? firstStep / s.Map.Width : u.TileY;
+        var path = Pathfinding.FindPath(s.Map, pathStartX, pathStartY, cmd.TargetX, cmd.TargetY, isHeavy);
 
         RoadConstruction.CancelForUnit(ref s, cmd.UnitId);
         u.Path.Clear();
-        for (int i = 0; i < path.Count; i++) u.Path.Add(path[i]);
-        u.ProgressRaw = 0;
+        if (wasMoving)
+        {
+            u.Path.Add(firstStep);
+            for (int i = 0; i < path.Count; i++) u.Path.Add(path[i]);
+        }
+        else
+        {
+            for (int i = 0; i < path.Count; i++) u.Path.Add(path[i]);
+            u.ProgressRaw = 0;
+        }
     }
 
     private static void ApplyBuildUnit(ref GameState s, BuildUnitCommand cmd)
@@ -132,6 +153,7 @@ public static class GameSim
         if (c.Owner == PlayerId.None) return;
         if ((int)c.Owner != cmd.PlayerId) return;
         if (s.Map.GetTileUnchecked(c.TileX, c.TileY).IsFortTile()) return;
+        if (c.IsUpgrading) return;
 
         if (cmd.Type is null)
         {
@@ -146,6 +168,59 @@ public static class GameSim
             c.ProductionOrder = want;
             c.ProductionProgress = FP.Zero;
         }
+    }
+
+    private static void ApplySetAutoBuild(ref GameState s, SetAutoBuildCommand cmd)
+    {
+        if ((uint)cmd.CityId >= (uint)s.Cities.Count) return;
+
+        Span<City> cities = CollectionsMarshal.AsSpan(s.Cities);
+        ref City c = ref cities[cmd.CityId];
+
+        if (c.Owner == PlayerId.None) return;
+        if ((int)c.Owner != cmd.PlayerId) return;
+        if (s.Map.GetTileUnchecked(c.TileX, c.TileY).IsFortTile()) return;
+
+        c.AutoBuildOrder = cmd.Type is null
+            ? (byte)0
+            : (byte)((byte)cmd.Type.Value + 1);
+    }
+
+    private static void ApplyUpgradeCity(ref GameState s, UpgradeCityCommand cmd)
+    {
+        if ((uint)cmd.CityId >= (uint)s.Cities.Count) return;
+
+        Span<City> cities = CollectionsMarshal.AsSpan(s.Cities);
+        ref City c = ref cities[cmd.CityId];
+
+        if (c.Owner == PlayerId.None) return;
+        if ((int)c.Owner != cmd.PlayerId) return;
+        if (s.Map.GetTileUnchecked(c.TileX, c.TileY).IsFortTile()) return;
+        if (c.IsProducing || c.IsUpgrading) return;
+
+        byte level = UnitStats.NormalizeDevelopmentLevel(c.DevelopmentLevel);
+        if (level >= UnitStats.CityDevelopmentMaxLevel) return;
+        if (UnitStats.UpgradeCost(level) <= 0) return;
+
+        c.DevelopmentLevel = level;
+        c.SupplyCapacity = UnitStats.SupplyCapacity(c);
+        c.DevelopmentOrder = (byte)(level + 1);
+        c.DevelopmentProgress = FP.Zero;
+    }
+
+    private static void ApplyCancelCityUpgrade(ref GameState s, CancelCityUpgradeCommand cmd)
+    {
+        if ((uint)cmd.CityId >= (uint)s.Cities.Count) return;
+
+        Span<City> cities = CollectionsMarshal.AsSpan(s.Cities);
+        ref City c = ref cities[cmd.CityId];
+
+        if (c.Owner == PlayerId.None) return;
+        if ((int)c.Owner != cmd.PlayerId) return;
+        if (s.Map.GetTileUnchecked(c.TileX, c.TileY).IsFortTile()) return;
+
+        c.DevelopmentOrder = 0;
+        c.DevelopmentProgress = FP.Zero;
     }
 
     private static void ApplyRenameCity(ref GameState s, RenameCityCommand cmd)

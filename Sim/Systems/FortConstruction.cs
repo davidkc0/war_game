@@ -74,6 +74,10 @@ public static class FortConstruction
                     SupplyCapacity = FortSupplyCapacity,
                     ProductionProgress = FP.Zero,
                     ProductionOrder = 0,
+                    AutoBuildOrder = 0,
+                    DevelopmentLevel = 0,
+                    DevelopmentProgress = FP.Zero,
+                    DevelopmentOrder = 0,
                     CaptureHp = FortCaptureHp,
                 };
                 s.Cities.Add(fortCity);

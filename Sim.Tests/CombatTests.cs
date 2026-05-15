@@ -132,7 +132,148 @@ public class ProductionTests
     }
 
     [Fact]
-    public void BuildOrder_SpawnsLightAfterTenSeconds()
+    public void CityDevelopment_ScalesIncomeAndSupply()
+    {
+        var s = BuildEmpty(5, 5);
+        var city = City.Create(0, 1, 1, PlayerId.Player1, isCapital: false);
+        city.DevelopmentLevel = 3;
+        s.Cities.Add(city);
+        s.Cities.Add(City.Create(1, 3, 3, PlayerId.Player2, isCapital: true));
+
+        s = GameSim.StepN(s, GameSim.TicksPerSecond);
+
+        FP gained = s.Players[(int)PlayerId.Player1].Eco;
+        Assert.True(gained > FP.FromInt(3) - FP.FromRaw(1024),
+            $"expected ~3 ECO; got {gained}");
+        Assert.True(gained < FP.FromInt(3) + FP.FromRaw(1024));
+        Assert.Equal(12, UnitStats.SupplyCapacity(s.Cities[0]));
+    }
+
+    [Fact]
+    public void UpgradeCity_CompletesAndScalesSupply()
+    {
+        var s = BuildEmpty(5, 5);
+        s.Cities.Add(City.Create(0, 1, 1, PlayerId.Player1, isCapital: false));
+        s.Cities.Add(City.Create(1, 3, 3, PlayerId.Player2, isCapital: true));
+        s.Players[(int)PlayerId.Player1].Eco = FP.FromInt(50);
+
+        s = GameSim.Step(s, new List<Commands.Command> {
+            new Commands.UpgradeCityCommand(0) { PlayerId = (int)PlayerId.Player1 },
+        });
+        Assert.True(s.Cities[0].IsUpgrading);
+        Assert.False(s.Cities[0].IsProducing);
+
+        s = GameSim.StepN(s, GameSim.TicksPerSecond * 41);
+
+        Assert.Equal(2, s.Cities[0].DevelopmentLevel);
+        Assert.Equal(8, s.Cities[0].SupplyCapacity);
+        Assert.False(s.Cities[0].IsUpgrading);
+    }
+
+    [Fact]
+    public void UpgradeCity_RejectsWrongPlayerFortNeutralAndMaxLevel()
+    {
+        var s = BuildEmpty(5, 5);
+        s.Cities.Add(City.Create(0, 1, 1, PlayerId.Player1, isCapital: false));
+        s.Cities.Add(City.Create(1, 2, 1, PlayerId.None, isCapital: false));
+        s.Map.SetTile(3, 1, TileType.Fort);
+        s.Cities.Add(new City
+        {
+            Id = 2,
+            TileX = 3,
+            TileY = 1,
+            Owner = PlayerId.Player1,
+            OriginalOwner = PlayerId.Player1,
+            SupplyCapacity = FortConstruction.FortSupplyCapacity,
+            DevelopmentLevel = 0,
+            CaptureHp = FortConstruction.FortCaptureHp,
+        });
+        var max = City.Create(3, 4, 1, PlayerId.Player1, isCapital: false);
+        max.DevelopmentLevel = 3;
+        s.Cities.Add(max);
+
+        s = GameSim.Step(s, new List<Commands.Command> {
+            new Commands.UpgradeCityCommand(0) { PlayerId = (int)PlayerId.Player2 },
+            new Commands.UpgradeCityCommand(1) { PlayerId = (int)PlayerId.Player1 },
+            new Commands.UpgradeCityCommand(2) { PlayerId = (int)PlayerId.Player1 },
+            new Commands.UpgradeCityCommand(3) { PlayerId = (int)PlayerId.Player1 },
+        });
+
+        Assert.False(s.Cities[0].IsUpgrading);
+        Assert.False(s.Cities[1].IsUpgrading);
+        Assert.False(s.Cities[2].IsUpgrading);
+        Assert.False(s.Cities[3].IsUpgrading);
+    }
+
+    [Fact]
+    public void UpgradeCity_IsMutuallyExclusiveWithProduction()
+    {
+        var s = BuildEmpty(5, 5);
+        s.Cities.Add(City.Create(0, 1, 1, PlayerId.Player1, isCapital: false));
+        s.Cities.Add(City.Create(1, 3, 3, PlayerId.Player2, isCapital: true));
+
+        s = GameSim.Step(s, new List<Commands.Command> {
+            new Commands.BuildUnitCommand(0, UnitType.Light) { PlayerId = (int)PlayerId.Player1 },
+            new Commands.UpgradeCityCommand(0) { PlayerId = (int)PlayerId.Player1 },
+        });
+        Assert.True(s.Cities[0].IsProducing);
+        Assert.False(s.Cities[0].IsUpgrading);
+
+        s = BuildEmpty(5, 5);
+        s.Cities.Add(City.Create(0, 1, 1, PlayerId.Player1, isCapital: false));
+        s.Cities.Add(City.Create(1, 3, 3, PlayerId.Player2, isCapital: true));
+        s = GameSim.Step(s, new List<Commands.Command> {
+            new Commands.UpgradeCityCommand(0) { PlayerId = (int)PlayerId.Player1 },
+            new Commands.BuildUnitCommand(0, UnitType.Light) { PlayerId = (int)PlayerId.Player1 },
+        });
+        Assert.True(s.Cities[0].IsUpgrading);
+        Assert.False(s.Cities[0].IsProducing);
+    }
+
+    [Fact]
+    public void AutoBuild_ResumesAfterUpgradeCompletes()
+    {
+        var s = BuildEmpty(5, 5);
+        s.Cities.Add(City.Create(0, 1, 1, PlayerId.Player1, isCapital: false));
+        s.Cities.Add(City.Create(1, 3, 3, PlayerId.Player2, isCapital: true));
+        s.Players[(int)PlayerId.Player1].Eco = FP.FromInt(60);
+
+        s = GameSim.Step(s, new List<Commands.Command> {
+            new Commands.SetAutoBuildCommand(0, UnitType.Light) { PlayerId = (int)PlayerId.Player1 },
+            new Commands.UpgradeCityCommand(0) { PlayerId = (int)PlayerId.Player1 },
+        });
+
+        s = GameSim.StepN(s, GameSim.TicksPerSecond * 41 + 1);
+
+        Assert.Equal(2, s.Cities[0].DevelopmentLevel);
+        Assert.Equal((byte)((byte)UnitType.Light + 1), s.Cities[0].AutoBuildOrder);
+        Assert.Equal((byte)((byte)UnitType.Light + 1), s.Cities[0].ProductionOrder);
+    }
+
+    [Fact]
+    public void CityCapture_CancelsActiveUpgradeButPreservesCompletedLevel()
+    {
+        var s = BuildEmpty(5, 5);
+        var city = City.Create(0, 2, 2, PlayerId.Player1, isCapital: false);
+        city.DevelopmentLevel = 2;
+        city.SupplyCapacity = UnitStats.SupplyCapacity(city);
+        city.DevelopmentOrder = 3;
+        city.DevelopmentProgress = FP.FromInt(20);
+        city.CaptureHp = City.CaptureDamageOnTile;
+        s.Cities.Add(city);
+        s.Units.Add(Unit.Create(0, PlayerId.Player2, UnitType.Heavy, 2, 2));
+
+        CityCapture.Tick(ref s);
+
+        Assert.Equal(PlayerId.Player2, s.Cities[0].Owner);
+        Assert.Equal(2, s.Cities[0].DevelopmentLevel);
+        Assert.Equal(8, s.Cities[0].SupplyCapacity);
+        Assert.False(s.Cities[0].IsUpgrading);
+        Assert.Equal(FP.Zero, s.Cities[0].DevelopmentProgress);
+    }
+
+    [Fact]
+    public void BuildOrder_SpawnsLightAfterTwelveSeconds()
     {
         var s = BuildEmpty(5, 5);
         s.Cities.Add(City.Create(0, 2, 2, PlayerId.Player1, isCapital: false));
@@ -142,8 +283,8 @@ public class ProductionTests
         };
         s = GameSim.Step(s, cmd);
 
-        // City produces 1 ECO/sec, light costs 10 ECO -> ~10 sec.
-        s = GameSim.StepN(s, GameSim.TicksPerSecond * 11);
+        // City produces 1 ECO/sec, light costs 12 ECO -> ~12 sec.
+        s = GameSim.StepN(s, GameSim.TicksPerSecond * 13);
         Assert.NotEmpty(s.Units);
         Assert.Equal(UnitType.Light, s.Units[0].Type);
         Assert.Equal(PlayerId.Player1, s.Units[0].Owner);
@@ -163,10 +304,10 @@ public class ProductionTests
         capState = GameSim.Step(capState, orderCmd);
         cityState = GameSim.Step(cityState, orderCmd);
 
-        // After 11 sec, capital (3 ECO/sec) has 33 ECO -> heavy (30) built.
-        // City (1 ECO/sec) has 11 -> nothing built.
-        capState = GameSim.StepN(capState, GameSim.TicksPerSecond * 11);
-        cityState = GameSim.StepN(cityState, GameSim.TicksPerSecond * 11);
+        // After 13 sec, capital (3 ECO/sec) has 39 ECO -> heavy (36) built.
+        // City (1 ECO/sec) has 13 -> nothing built.
+        capState = GameSim.StepN(capState, GameSim.TicksPerSecond * 13);
+        cityState = GameSim.StepN(cityState, GameSim.TicksPerSecond * 13);
         Assert.NotEmpty(capState.Units);
         Assert.Empty(cityState.Units);
     }
@@ -212,6 +353,52 @@ public class ProductionTests
         s = GameSim.Step(s, cancelCmd);
         s = GameSim.StepN(s, GameSim.TicksPerSecond * 30);
         Assert.Empty(s.Units);
+    }
+
+    [Fact]
+    public void AutoBuild_RequeuesAfterSpawnAndWaitsForClearTile()
+    {
+        var s = BuildEmpty(8, 1);
+        s.Cities.Add(City.Create(0, 0, 0, PlayerId.Player1, isCapital: true));
+
+        s = GameSim.Step(s, new List<Commands.Command> {
+            new Commands.SetAutoBuildCommand(0, UnitType.Light) { PlayerId = (int)PlayerId.Player1 },
+        });
+
+        s = GameSim.StepN(s, GameSim.TicksPerSecond * 5);
+        Assert.Single(s.Units);
+        Assert.Equal((byte)((byte)UnitType.Light + 1), s.Cities[0].ProductionOrder);
+        Assert.Equal((byte)((byte)UnitType.Light + 1), s.Cities[0].AutoBuildOrder);
+
+        // The second unit should not spawn on top of the first.
+        s = GameSim.StepN(s, GameSim.TicksPerSecond * 8);
+        Assert.Single(s.Units);
+
+        s = GameSim.Step(s, new List<Commands.Command> {
+            new Commands.MoveUnitCommand(0, 4, 0) { PlayerId = (int)PlayerId.Player1 },
+        });
+        s = GameSim.StepN(s, GameSim.TicksPerSecond * 3);
+
+        Assert.True(s.Units.Count >= 2,
+            $"expected autobuild to spawn a second unit after the city cleared; got {s.Units.Count}");
+    }
+
+    [Fact]
+    public void AutoBuild_RejectedFromWrongPlayerAndFort()
+    {
+        var s = BuildEmpty(3, 3);
+        s.Cities.Add(City.Create(0, 1, 1, PlayerId.Player1, isCapital: false));
+
+        s = GameSim.Step(s, new List<Commands.Command> {
+            new Commands.SetAutoBuildCommand(0, UnitType.Light) { PlayerId = (int)PlayerId.Player2 },
+        });
+        Assert.Equal(0, s.Cities[0].AutoBuildOrder);
+
+        s.Map.SetTile(1, 1, TileType.Fort);
+        s = GameSim.Step(s, new List<Commands.Command> {
+            new Commands.SetAutoBuildCommand(0, UnitType.Heavy) { PlayerId = (int)PlayerId.Player1 },
+        });
+        Assert.Equal(0, s.Cities[0].AutoBuildOrder);
     }
 
     [Fact]

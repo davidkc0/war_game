@@ -38,6 +38,27 @@ public class NoStackingTests
     }
 
     [Fact]
+    public void FriendlyUnitsCannotEndOnSameTile()
+    {
+        var s = BuildLane(10);
+        s.Units.Add(Unit.Create(0, PlayerId.Player1, UnitType.Light, 0, 0));
+        s.Units.Add(Unit.Create(1, PlayerId.Player1, UnitType.Light, 2, 0));
+
+        s = GameSim.Step(s, new List<Command> {
+            new MoveUnitCommand(0, 5, 0) { PlayerId = (int)PlayerId.Player1 },
+            new MoveUnitCommand(1, 5, 0) { PlayerId = (int)PlayerId.Player1 },
+        });
+
+        s = GameSim.StepN(s, 200);
+
+        Assert.False(
+            s.Units[0].TileX == s.Units[1].TileX
+            && s.Units[0].TileY == s.Units[1].TileY,
+            "friendly units should not park on the same final tile");
+        Assert.Contains(5, new[] { s.Units[0].TileX, s.Units[1].TileX });
+    }
+
+    [Fact]
     public void UnitResumesAfterBlockerMoves()
     {
         // Unit 0 is in the way; ordering it forward frees the path for

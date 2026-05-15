@@ -56,5 +56,5 @@ public partial class Main : Node2D
 #endif
 
   private void RunScene()
-    => GetTree().ChangeSceneToFile("res://src/Game.tscn");
+    => GetTree().ChangeSceneToFile("res://src/MatchSetup.tscn");
 }

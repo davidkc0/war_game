@@ -39,14 +39,25 @@ public static class RoadConstruction
 
             int flat = order.Path[order.CurrentPathIndex];
             int tx = flat % s.Map.Width, ty = flat / s.Map.Width;
-            if (!IsAdjacent(u.TileX, u.TileY, tx, ty))
+            bool sameTile = u.TileX == tx && u.TileY == ty;
+            if (!sameTile && !IsAdjacent(u.TileX, u.TileY, tx, ty))
             {
                 s.PendingRoads.RemoveAt(i);
                 continue;
             }
 
             TileType tile = s.Map.GetTileUnchecked(tx, ty);
-            if (!Pathfinding.CanEngineerEnter(s.Map, u.TileX, u.TileY, tx, ty))
+            if (!sameTile && !Pathfinding.CanEngineerEnter(s.Map, u.TileX, u.TileY, tx, ty))
+            {
+                s.PendingRoads.RemoveAt(i);
+                continue;
+            }
+            if (sameTile && !Pathfinding.IsEngineeringTileCandidate(s.Map, tx, ty))
+            {
+                s.PendingRoads.RemoveAt(i);
+                continue;
+            }
+            if (IsTileOccupiedByOtherUnit(s, order.UnitId, tx, ty))
             {
                 s.PendingRoads.RemoveAt(i);
                 continue;
@@ -117,6 +128,18 @@ public static class RoadConstruction
         if (u.Owner != order.Owner) return false;
         if (u.Path is { Count: > 0 }) return false;
         return true;
+    }
+
+    private static bool IsTileOccupiedByOtherUnit(in GameState s, int selfId, int x, int y)
+    {
+        for (int i = 0; i < s.Units.Count; i++)
+        {
+            if (i == selfId) continue;
+            Unit other = s.Units[i];
+            if (!other.IsAlive) continue;
+            if (other.TileX == x && other.TileY == y) return true;
+        }
+        return false;
     }
 
     private static bool IsAdjacent(int ax, int ay, int bx, int by)

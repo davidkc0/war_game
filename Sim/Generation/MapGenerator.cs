@@ -14,7 +14,7 @@ namespace WarGame.Sim.Generation;
 //   - Each team gets 1 capital + 2 cities = 6 total structures
 //   - Capitals at opposing map extremes
 //   - Balance is NOT enforced (asymmetry is intentional per Freedman)
-//   - Map size: 60×60 default, scalable later
+//   - Map size: 80×80 default, with smaller sizes still supported by tests
 //
 // Geological rules:
 //   - Mountains are never adjacent to water (foothills buffer)
@@ -24,8 +24,8 @@ namespace WarGame.Sim.Generation;
 //   - Mountain passes at saddle points
 public static class MapGenerator
 {
-    public const int DefaultWidth = 60;
-    public const int DefaultHeight = 60;
+    public const int DefaultWidth = 80;
+    public const int DefaultHeight = 80;
 
     // Terrain percentages in permille. Thresholds are computed from the
     // elevation distribution per-seed (sort + percentile lookup) rather
@@ -156,6 +156,7 @@ public static class MapGenerator
         // then punched connectivity paths later, which left some accepted
         // maps with no visible roads at all.
         GenerateRoads(builder, elevation, cities, width, height);
+        CleanupShortRiverComponents(builder, width, height, minComponentSize: 10);
 
         // Step 11: Peaks are rebuilt as the final terrain pass so they
         // describe the mountain ranges that actually survived rivers,
@@ -1432,6 +1433,7 @@ public static class MapGenerator
                     best = -1;
                     break;
                 }
+                if (HasNeighbor(snapshot, nx, ny, TileType.River)) continue;
 
                 int rise = elev[nIdx] - elev[current];
                 int uphillPenalty = rise <= 0 ? 0 : 12000 + rise * 3;
@@ -1533,6 +1535,63 @@ public static class MapGenerator
         for (int i = 0; i < map.TileCount; i++)
             if ((TileType)map.RawTiles[i] == tile) count++;
         return count;
+    }
+
+    private static void CleanupShortRiverComponents(MapState.Builder b, int w, int h, int minComponentSize)
+    {
+        var map = b.Build();
+        var visited = new bool[w * h];
+        for (int i = 0; i < w * h; i++)
+        {
+            if (visited[i]) continue;
+            if ((TileType)map.RawTiles[i] != TileType.River) continue;
+
+            var component = new List<int>();
+            CollectRiverContinuityComponent(map, i, visited, component);
+            if (component.Count >= minComponentSize) continue;
+
+            for (int c = 0; c < component.Count; c++)
+            {
+                int idx = component[c];
+                int x = idx % w, y = idx / w;
+                TileType t = map.GetTileUnchecked(x, y);
+                if (t == TileType.River)
+                    b.Set(x, y, TileType.Plains);
+                else if (t == TileType.Bridge)
+                    b.Set(x, y, TileType.Road);
+            }
+        }
+    }
+
+    private static void CollectRiverContinuityComponent(
+        MapState map,
+        int start,
+        bool[] visited,
+        List<int> component)
+    {
+        int w = map.Width, h = map.Height;
+        var queue = new Queue<int>();
+        int[] dx = { 0, 1, 0, -1 };
+        int[] dy = { -1, 0, 1, 0 };
+        visited[start] = true;
+        queue.Enqueue(start);
+        while (queue.Count > 0)
+        {
+            int idx = queue.Dequeue();
+            component.Add(idx);
+            int x = idx % w, y = idx / w;
+            for (int k = 0; k < 4; k++)
+            {
+                int nx = x + dx[k], ny = y + dy[k];
+                if ((uint)nx >= (uint)w || (uint)ny >= (uint)h) continue;
+                int nIdx = ny * w + nx;
+                if (visited[nIdx]) continue;
+                TileType t = map.GetTileUnchecked(nx, ny);
+                if (t is not (TileType.River or TileType.Bridge)) continue;
+                visited[nIdx] = true;
+                queue.Enqueue(nIdx);
+            }
+        }
     }
 
     private static void EnsureRiverTouchesMountainSource(MapState.Builder b, int w, int h)

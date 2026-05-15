@@ -93,7 +93,10 @@ public static class CityCapture
                     // City flips! Cancel production and reset capture HP.
                     c.Owner = dominantAttacker;
                     c.ProductionOrder = 0;
+                    c.AutoBuildOrder = 0;
                     c.ProductionProgress = FP.Zero;
+                    c.DevelopmentOrder = 0;
+                    c.DevelopmentProgress = FP.Zero;
                     c.CaptureHp = c.MaxCaptureHp;
                 }
             }

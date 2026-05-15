@@ -22,17 +22,31 @@ public static class Theme
 
     // ----- Terrain (desaturated so faction colors stay visually dominant) -
     public static readonly Color BgVoid    = new("#0F172A");   // slate-900
-    public static readonly Color Water     = new("#2563EB");   // blue-600
-    public static readonly Color River     = new("#2563EB");   // same dark blue as water
-    public static readonly Color Plains    = new("#86EFAC");   // light green (green-300)
-    public static readonly Color Forest    = new("#15803D");   // green-700
-    public static readonly Color Mountain  = new("#A1A1AA");   // light gray (zinc-400)
-    public static readonly Color MountainPeak = new("#71717A");// old mountain gray (zinc-500)
-    public static readonly Color Road      = new("#D2B48C");   // warm sandy tone
-    public static readonly Color Bridge    = new("#B88A5A");   // darker tan crossing
+    public static readonly Color Plains    = new("#BCC77E");
+    public static readonly Color PlainsHighlight = new("#C8D08A");
+    public static readonly Color Forest    = new("#656D39");
+    public static readonly Color ForestHighlight = new("#7A8348");
+    public static readonly Color Water     = new("#3A6B8C");
+    public static readonly Color WaterHighlight = new("#4A7E9F");
+    public static readonly Color River     = Water;
+    public static readonly Color Road      = new("#A88B5C");
+    public static readonly Color Bridge    = new("#6B4423");
+    public static readonly Color Mountain  = new("#666666");
+    public static readonly Color MountainShadow = new("#4D4D4D");
+    public static readonly Color MountainPeak = new("#FFFFFF");
     public static readonly Color Fort      = new("#8B6914");   // dark amber/brown
     public static readonly Color FogHidden = new("#020617");   // near-black unknown
     public static readonly Color FogGrid   = new("#1E293B");   // subtle hidden tile grid
+    public static readonly Color GridLine  = new("#0F172A33"); // faint tile readability grid
+    public static readonly Color TerrainTransition = new("#263018");
+    public static readonly Color TerrainShadow = new("#111827");
+    public static readonly Color WaterWave = WaterHighlight;
+    public const float TerrainTextureAlpha = 0.07f;
+    public const float TerrainTextureAlphaExplored = 0.03f;
+    public const float TerrainTransitionAlpha = 0.22f;
+    public const float TerrainShadowAlpha = 0.18f;
+    public const float WaterWaveAlpha = 0.18f;
+    public const float WaterWaveAlphaExplored = 0.07f;
 
     // ----- UI -------------------------------------------------------------
     public static readonly Color HudText      = new("#E2E8F0");
@@ -58,11 +72,12 @@ public static class Theme
     // Combat flash — brief radial pulse when a unit takes damage.
     public static readonly Color CombatFlash  = new("#FF6B35CC"); // warm orange
     // Move destination marker.
-    public static readonly Color MoveMarker   = new("#FBBF24AA"); // amber, semi-transparent
+    public static readonly Color MoveMarker   = new("#FBBF24CC"); // amber, semi-transparent
     // City hover highlight.
-    public static readonly Color CityHover    = new("#FBBF2455"); // amber, very faint
-    public static readonly Color RoadPreview  = new("#D2B48C99");
-    public static readonly Color BridgePreview = new("#B88A5ACC");
+    public static readonly Color CityHover    = new("#FBBF2499"); // amber, visible hover
+    public static readonly Color TileHover    = new("#FBBF2440");
+    public static readonly Color RoadPreview  = new("#A88B5C99");
+    public static readonly Color BridgePreview = new("#6B4423CC");
     public static readonly Color InvalidPreview = new("#EF444499");
 
     // Production menu colors.
@@ -105,7 +120,7 @@ public static class Theme
         TileType.Plains   => Plains,
         TileType.Forest   => Forest,
         TileType.Mountain => Mountain,
-        TileType.MountainPeak => MountainPeak,
+        TileType.MountainPeak => Mountain,
         TileType.Water    => Water,
         TileType.River    => River,
         TileType.Road     => Road,
@@ -122,10 +137,24 @@ public static class Theme
     /// ugly horizontal band that a two-strip gradient creates.
     /// </summary>
     public static Color ForTileEdgeHighlight(TileType t)
-    {
-        Color c = ForTile(t);
-        return c.Lightened(0.18f);
-    }
+        => t switch
+        {
+            TileType.Plains or TileType.City or TileType.Capital => PlainsHighlight,
+            TileType.Forest => ForestHighlight,
+            TileType.Water or TileType.River or TileType.Bridge => WaterHighlight,
+            TileType.Road => PlainsHighlight,
+            TileType.Mountain => Mountain.Lightened(0.10f),
+            TileType.MountainPeak => Mountain.Lightened(0.10f),
+            _ => ForTile(t).Lightened(0.14f),
+        };
+
+    public static Color ForTileEdgeShadow(TileType t)
+        => t switch
+        {
+            TileType.Mountain => MountainShadow,
+            TileType.MountainPeak => MountainShadow,
+            _ => new Color(0, 0, 0, 1),
+        };
 
     // ----- Font management ------------------------------------------------
     // Bundled Inter Regular + SemiBold. Loaded once, cached forever.

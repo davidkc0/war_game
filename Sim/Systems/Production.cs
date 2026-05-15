@@ -9,8 +9,8 @@ namespace WarGame.Sim.Systems;
 // to its *new* owner starting next tick.
 //
 //   1. Each owned, living city accrues ECO into its owner's player slot.
-//      Capital  -> CapitalEcoPerTick
-//      City     -> CityEcoPerTick
+//      Capital level 1/2/3 -> 3/4/5 ECO/sec
+//      City level 1/2/3    -> 1/2/3 ECO/sec
 //
 //   2. For each city with a production order, drain ECO from the owner's
 //      pool into the city's ProductionProgress. When progress reaches the
@@ -29,8 +29,7 @@ public static class Production
             City c = s.Cities[i];
             if (c.Owner == PlayerId.None) continue;
             if (s.Map.GetTileUnchecked(c.TileX, c.TileY).IsFortTile()) continue;
-            FP rate = c.IsCapital ? UnitStats.CapitalEcoPerTick : UnitStats.CityEcoPerTick;
-            s.Players[(int)c.Owner].Eco += rate;
+            s.Players[(int)c.Owner].Eco += UnitStats.EcoRate(c);
         }
 
         // Step 2: precompute global supply usage per player so we don't
@@ -47,22 +46,39 @@ public static class Production
         {
             City c = s.Cities[i];
             if (c.Owner == PlayerId.None) continue;
-            capacity[(int)c.Owner] += c.SupplyCapacity;
+            capacity[(int)c.Owner] += UnitStats.SupplyCapacity(c);
         }
 
-        // Step 3: production drain + unit spawn.
+        // Step 3: upgrade drain, production drain, and unit spawn.
         Span<City> cities = CollectionsMarshal.AsSpan(s.Cities);
         for (int i = 0; i < cities.Length; i++)
         {
             ref City c = ref cities[i];
-            if (!c.IsProducing) continue;
             if (c.Owner == PlayerId.None) continue;
             if (s.Map.GetTileUnchecked(c.TileX, c.TileY).IsFortTile())
             {
                 c.ProductionOrder = 0;
                 c.ProductionProgress = FP.Zero;
+                c.AutoBuildOrder = 0;
+                c.DevelopmentLevel = 0;
+                c.DevelopmentOrder = 0;
+                c.DevelopmentProgress = FP.Zero;
                 continue;
             }
+
+            if (c.DevelopmentLevel == 0)
+                c.DevelopmentLevel = UnitStats.CityDevelopmentMinLevel;
+            c.SupplyCapacity = UnitStats.SupplyCapacity(c);
+
+            if (c.IsUpgrading)
+            {
+                ProcessUpgrade(ref s, ref c);
+                continue;
+            }
+
+            if (!c.IsProducing && c.AutoBuildOrder != 0)
+                c.ProductionOrder = c.AutoBuildOrder;
+            if (!c.IsProducing) continue;
 
             UnitType type = (UnitType)(c.ProductionOrder - 1);
             int costPerUnit = UnitStats.EcoCost(type);
@@ -74,12 +90,10 @@ public static class Production
             if (usage[(int)c.Owner] + supplyCost > capacity[(int)c.Owner])
                 continue;
 
-            // Drain at most one ECO/tick (matches the city's own production
-            // rate — we don't let one city siphon a whole stockpile faster
-            // than it produces). This makes Capital faster (3/tick) than
-            // a regular City (1/tick), which is the intended meaning of
-            // "capitals produce 3x" per PLAN.md §3.
-            FP rate = c.IsCapital ? UnitStats.CapitalEcoPerTick : UnitStats.CityEcoPerTick;
+            // Drain at most this city's ECO rate — we don't let one city
+            // siphon a whole stockpile faster than it can work. Higher-level
+            // cities and capitals therefore build/upgrade faster.
+            FP rate = UnitStats.EcoRate(c);
             ref Player player = ref s.Players[(int)c.Owner];
             FP drain = FP.Min(rate, player.Eco);
             // Also clamp by remaining cost so we don't overshoot.
@@ -107,10 +121,44 @@ public static class Production
                 usage[(int)c.Owner] += supplyCost;
 
                 c.ProductionProgress = FP.Zero;
-                // Phase 1: produce one then idle. Step 8's UI lets the
-                // player queue subsequent orders.
-                c.ProductionOrder = 0;
+                c.ProductionOrder = c.AutoBuildOrder;
             }
+        }
+    }
+
+    private static void ProcessUpgrade(ref GameState s, ref City c)
+    {
+        byte currentLevel = UnitStats.NormalizeDevelopmentLevel(c.DevelopmentLevel);
+        byte targetLevel = c.DevelopmentOrder;
+        if (targetLevel <= currentLevel || targetLevel > UnitStats.CityDevelopmentMaxLevel)
+        {
+            c.DevelopmentOrder = 0;
+            c.DevelopmentProgress = FP.Zero;
+            return;
+        }
+
+        int cost = UnitStats.UpgradeCost(currentLevel);
+        if (cost <= 0)
+        {
+            c.DevelopmentOrder = 0;
+            c.DevelopmentProgress = FP.Zero;
+            return;
+        }
+
+        ref Player player = ref s.Players[(int)c.Owner];
+        FP drain = FP.Min(UnitStats.EcoRate(c), player.Eco);
+        FP remaining = FP.FromInt(cost) - c.DevelopmentProgress;
+        if (drain > remaining) drain = remaining;
+
+        player.Eco -= drain;
+        c.DevelopmentProgress += drain;
+
+        if (c.DevelopmentProgress >= FP.FromInt(cost))
+        {
+            c.DevelopmentLevel = targetLevel;
+            c.SupplyCapacity = UnitStats.SupplyCapacity(c);
+            c.DevelopmentOrder = 0;
+            c.DevelopmentProgress = FP.Zero;
         }
     }
 

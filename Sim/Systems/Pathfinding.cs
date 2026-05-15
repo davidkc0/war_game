@@ -150,8 +150,12 @@ public static class Pathfinding
     {
         var result = new List<int>();
         if (!map.InBounds(startX, startY) || !map.InBounds(goalX, goalY)) return result;
-        if (startX == goalX && startY == goalY) return result;
         if (!IsEngineeringTileCandidate(map, goalX, goalY)) return result;
+        if (startX == goalX && startY == goalY)
+        {
+            result.Add(goalY * map.Width + goalX);
+            return result;
+        }
 
         int w = map.Width, h = map.Height, n = w * h;
         int startIdx = startY * w + startX;
@@ -258,7 +262,7 @@ public static class Pathfinding
 
     public static bool IsBridgeTerrain(TileType t) => t is TileType.River or TileType.Water;
 
-    private static bool IsEngineeringTileCandidate(MapState map, int x, int y)
+    public static bool IsEngineeringTileCandidate(MapState map, int x, int y)
     {
         TileType t = map.GetTileUnchecked(x, y);
         if (!IsEngineeringPassable(t)) return false;

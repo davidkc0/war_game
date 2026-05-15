@@ -217,6 +217,38 @@ public class MovementTests
     }
 
     [Fact]
+    public void RetargetingMovingUnit_DoesNotSnapBackToAnchor()
+    {
+        var s = BuildStripWithLight(30, 0);
+        s = GameSim.Step(s, new List<Command> {
+            new MoveUnitCommand(0, 10, 0) { PlayerId = (int)PlayerId.Player1 },
+        });
+
+        for (int t = 0; t < 3; t++)
+            s = GameSim.Step(s, null);
+
+        Assert.Equal(0, s.Units[0].TileX);
+        Assert.NotEmpty(s.Units[0].Path);
+        Assert.True(s.Units[0].ProgressRaw > 0);
+
+        FP before = ResolvePosition(s, 0);
+        int currentNext = s.Units[0].Path[0];
+
+        s = GameSim.Step(s, new List<Command> {
+            new MoveUnitCommand(0, 15, 0) { PlayerId = (int)PlayerId.Player1 },
+        });
+
+        FP after = ResolvePosition(s, 0);
+        Assert.True(after > before, $"retarget moved backward from {before} to {after}");
+        Assert.NotEmpty(s.Units[0].Path);
+        Assert.Equal(currentNext, s.Units[0].Path[0]);
+
+        s = GameSim.StepN(s, 200);
+        Assert.Equal(15, s.Units[0].TileX);
+        Assert.Empty(s.Units[0].Path);
+    }
+
+    [Fact]
     public void Determinism_SameSeedSameCommands_SameFinalState()
     {
         // End-to-end: build two identical sims, issue identical command

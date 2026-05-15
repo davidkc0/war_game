@@ -22,9 +22,11 @@ namespace WarGame.Sim.State;
 //   9 — Phase 3a: + supply state, Bridge tile type, PendingRoads.
 //   10 — Phase 3b: + per-player fog of war visibility and last-seen memory.
 //   11 — Phase 3 polish: + city names, unit XP/rank/promotion state.
+//   12 — Phase 4 cleanup: + City.AutoBuildOrder.
+//   13 — Economy growth: + city development levels and upgrade progress.
 public struct GameState
 {
-    public const int CurrentVersion = 11;
+    public const int CurrentVersion = 13;
 
     public int Version;
     public int Tick;

@@ -27,6 +27,18 @@ public sealed record MoveUnitCommand(int UnitId, int TargetX, int TargetY) : Com
 // while one is in flight resets ProductionProgress to zero.
 public sealed record BuildUnitCommand(int CityId, WarGame.Sim.State.UnitType? Type) : Command;
 
+// Toggle repeat production for an owned real city/capital. Type=null turns
+// autobuild off; otherwise the city restarts that unit whenever its queue is
+// empty.
+public sealed record SetAutoBuildCommand(int CityId, WarGame.Sim.State.UnitType? Type) : Command;
+
+// Upgrade an owned real city/capital by one development level. Forts cannot
+// upgrade. Upgrade progress drains ECO through Production.Tick.
+public sealed record UpgradeCityCommand(int CityId) : Command;
+
+// Cancel the active upgrade order for one owned real city/capital.
+public sealed record CancelCityUpgradeCommand(int CityId) : Command;
+
 // Rename an owned real city/capital. The sim sanitizes the text and stores
 // only deterministic ASCII-visible names.
 public sealed record RenameCityCommand(int CityId, string Name) : Command;

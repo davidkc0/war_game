@@ -44,9 +44,13 @@ public partial class InputController : Node
     public Rect2 MenuRect { get; private set; }
     public Rect2 MenuLightButtonRect { get; private set; }
     public Rect2 MenuHeavyButtonRect { get; private set; }
+    public Rect2 MenuAutoBuildToggleRect { get; private set; }
+    public Rect2 MenuUpgradeButtonRect { get; private set; }
+    public Rect2 MenuCancelUpgradeButtonRect { get; private set; }
     public Rect2 MenuCancelButtonRect { get; private set; }
     public Rect2 MenuEditNameButtonRect { get; private set; }
     public Rect2 MenuNameInputRect { get; private set; }
+    public UnitType MenuSelectedBuildType { get; private set; } = UnitType.Light;
     public bool RenameMode { get; private set; }
     public string RenameDraft { get; private set; } = "";
     public bool RoadBuildMode { get; private set; }
@@ -274,16 +278,111 @@ public partial class InputController : Node
         // determinism if multiple commands are issued in the same frame.
         var ids = new List<int>(Game.SelectedUnitIds);
         ids.Sort();
+        var reservedDestinations = new HashSet<int>();
+        var previewPath = new List<int>();
+        var previewDestinations = new List<int>();
+
         foreach (int id in ids)
         {
-            Game.EnqueueCommand(new MoveUnitCommand(id, tx, ty)
+            if ((uint)id >= (uint)st.Units.Count) continue;
+            Unit u = st.Units[id];
+            if (!u.IsAlive || u.Owner != Game.ActivePlayer) continue;
+
+            if (!TryFindMoveDestination(st, u, tx, ty, reservedDestinations,
+                    out int dx, out int dy, out List<int> path))
+                continue;
+
+            int destFlat = dy * st.Map.Width + dx;
+            reservedDestinations.Add(destFlat);
+            previewDestinations.Add(destFlat);
+            previewPath.AddRange(path);
+
+            if (u.TileX == dx && u.TileY == dy) continue;
+            Game.EnqueueCommand(new MoveUnitCommand(id, dx, dy)
             {
                 PlayerId = (int)Game.ActivePlayer
             });
         }
 
-        // Record the move target for the destination marker VFX.
-        Game.SetMoveTarget(tx, ty);
+        if (previewDestinations.Count > 0)
+            Game.SetMovePreview(previewPath, previewDestinations);
+    }
+
+    private bool TryFindMoveDestination(
+        in GameState st,
+        Unit u,
+        int desiredX,
+        int desiredY,
+        HashSet<int> reservedDestinations,
+        out int targetX,
+        out int targetY,
+        out List<int> previewPath)
+    {
+        targetX = targetY = -1;
+        previewPath = new List<int>();
+        bool isHeavy = u.Type == UnitType.Heavy;
+
+        const int maxRadius = 6;
+        for (int radius = 0; radius <= maxRadius; radius++)
+        {
+            int bestFlat = int.MaxValue;
+            int bestCost = int.MaxValue;
+            List<int>? bestPath = null;
+            int bestX = -1, bestY = -1;
+
+            for (int oy = -radius; oy <= radius; oy++)
+            {
+                for (int ox = -radius; ox <= radius; ox++)
+                {
+                    if (Manhattan(0, 0, ox, oy) != radius) continue;
+                    int cx = desiredX + ox, cy = desiredY + oy;
+                    if (!st.Map.InBounds(cx, cy)) continue;
+                    int flat = cy * st.Map.Width + cx;
+                    if (reservedDestinations.Contains(flat)) continue;
+                    if (!FogOfWar.IsKnown(st, Game.ActivePlayer, cx, cy)) continue;
+
+                    TileType tile = st.Map.GetTileUnchecked(cx, cy);
+                    if (!tile.IsPassable(isHeavy)) continue;
+                    if (IsTileOccupiedByOtherUnit(st, u.Id, cx, cy)) continue;
+
+                    List<int> path = FindCommandPreviewPath(st, u, cx, cy);
+                    if (path.Count == 0 && (u.TileX != cx || u.TileY != cy)) continue;
+                    int cost = path.Count;
+                    if (cost > bestCost) continue;
+                    if (cost == bestCost && flat >= bestFlat) continue;
+
+                    bestFlat = flat;
+                    bestCost = cost;
+                    bestPath = path;
+                    bestX = cx;
+                    bestY = cy;
+                }
+            }
+
+            if (bestPath is not null)
+            {
+                targetX = bestX;
+                targetY = bestY;
+                previewPath = bestPath;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static List<int> FindCommandPreviewPath(in GameState st, Unit u, int targetX, int targetY)
+    {
+        bool isHeavy = u.Type == UnitType.Heavy;
+        bool wasMoving = u.Path is { Count: > 0 };
+        int firstStep = wasMoving ? u.Path[0] : -1;
+        int startX = wasMoving ? firstStep % st.Map.Width : u.TileX;
+        int startY = wasMoving ? firstStep / st.Map.Width : u.TileY;
+
+        List<int> path = Pathfinding.FindPath(st.Map, startX, startY, targetX, targetY, isHeavy);
+        if (wasMoving)
+            path.Insert(0, firstStep);
+        return path;
     }
 
     // ---- Production menu --------------------------------------------------
@@ -311,6 +410,8 @@ public partial class InputController : Node
         ClosePromotionMenu();
         RenameMode = false;
         MenuCityId = cityId;
+        if ((uint)cityId < (uint)Game.State.Cities.Count)
+            MenuSelectedBuildType = SelectedBuildTypeFor(Game.State.Cities[cityId]);
         ComputeMenuRects(anchor);
         MenuVisible = true;
     }
@@ -344,6 +445,10 @@ public partial class InputController : Node
         if (MenuVisible && MenuCityId >= 0)
         {
             City c = Game.State.Cities[MenuCityId];
+            if (c.IsProducing)
+                MenuSelectedBuildType = (UnitType)(c.ProductionOrder - 1);
+            else if (c.AutoBuildOrder != 0)
+                MenuSelectedBuildType = (UnitType)(c.AutoBuildOrder - 1);
             Vector2 mapPos = MapRenderer.TileCenter(c.TileX, c.TileY, Vector2.Zero);
             ComputeMenuRects(Game.MapToScreen(mapPos));
         }
@@ -351,17 +456,16 @@ public partial class InputController : Node
 
     private void ComputeMenuRects(Vector2 rawPos)
     {
-        bool producing = (uint)MenuCityId < (uint)Game.State.Cities.Count
-                         && Game.State.Cities[MenuCityId].IsProducing;
+        bool valid = (uint)MenuCityId < (uint)Game.State.Cities.Count;
+        bool producing = valid && Game.State.Cities[MenuCityId].IsProducing;
+        bool upgrading = valid && Game.State.Cities[MenuCityId].IsUpgrading;
 
-        const float w = 220f;
-        const float bw = 196f, bh = 32f;
+        const float w = 286f;
+        const float bw = 262f, bh = 32f;
         const float pad = 12f;
 
         float renameExtra = RenameMode ? 36f : 0f;
-        // Idle: title + optional rename row + two build buttons.
-        // Producing: title + optional rename row + progress + cancel.
-        float h = (producing ? 124f : 120f) + renameExtra;
+        float h = 292f + renameExtra;
 
         // Clamp to viewport so the menu stays fully visible.
         Vector2 vp = Game.GetViewportRect().Size;
@@ -377,22 +481,30 @@ public partial class InputController : Node
         MenuNameInputRect = new Rect2(pos + new Vector2(pad, 34), new Vector2(w - 24, 26));
         float contentY = RenameMode ? 36f : 0f;
 
-        if (producing)
+        MenuLightButtonRect = HiddenRect();
+        MenuHeavyButtonRect = HiddenRect();
+        MenuAutoBuildToggleRect = HiddenRect();
+        MenuUpgradeButtonRect = HiddenRect();
+        MenuCancelUpgradeButtonRect = HiddenRect();
+
+        if (upgrading)
+        {
+            MenuCancelUpgradeButtonRect = new Rect2(pos + new Vector2(pad, 150 + contentY), new Vector2(bw, bh));
+            MenuAutoBuildToggleRect = new Rect2(pos + new Vector2(pad, 192 + contentY), new Vector2(bw, bh));
+        }
+        else if (producing)
         {
             // Single "Cancel order" button, placed below the progress bar.
-            // Title area: 0–28, gap: 28–36, label: 36–54, gap: 54–60,
-            // bar: 60–70, gap: 70–80, cancel button: 80–112.
-            MenuLightButtonRect = new Rect2(pos + new Vector2(pad, 80 + contentY), new Vector2(bw, bh));
-            // Heavy button rect is unused during production. Place it
-            // off-screen so hit-tests never match.
-            MenuHeavyButtonRect = new Rect2(new Vector2(-999, -999), Vector2.Zero);
+            MenuLightButtonRect = new Rect2(pos + new Vector2(pad, 150 + contentY), new Vector2(bw, bh));
+            MenuAutoBuildToggleRect = new Rect2(pos + new Vector2(pad, 192 + contentY), new Vector2(bw, bh));
         }
         else
         {
             // Two build buttons stacked vertically.
-            // Title: 0–28, gap: 28–36, light: 36–68, gap: 68–76, heavy: 76–108.
-            MenuLightButtonRect = new Rect2(pos + new Vector2(pad, 36 + contentY), new Vector2(bw, bh));
-            MenuHeavyButtonRect = new Rect2(pos + new Vector2(pad, 76 + contentY), new Vector2(bw, bh));
+            MenuLightButtonRect = new Rect2(pos + new Vector2(pad, 116 + contentY), new Vector2(bw, bh));
+            MenuHeavyButtonRect = new Rect2(pos + new Vector2(pad, 154 + contentY), new Vector2(bw, bh));
+            MenuAutoBuildToggleRect = new Rect2(pos + new Vector2(pad, 192 + contentY), new Vector2(bw, bh));
+            MenuUpgradeButtonRect = new Rect2(pos + new Vector2(pad, 234 + contentY), new Vector2(bw, bh));
         }
     }
 
@@ -419,11 +531,43 @@ public partial class InputController : Node
             return true;
         }
 
-        // The two main buttons swap meaning when the city is already
-        // building something. Idle: [Build Light] [Build Heavy].
-        // Producing: [Cancel order] [(hidden)].
-        bool producing = (uint)MenuCityId < (uint)Game.State.Cities.Count
-                         && Game.State.Cities[MenuCityId].IsProducing;
+        // The main buttons swap meaning by city state:
+        // idle = build/unit/upgrade controls, producing = cancel order,
+        // upgrading = cancel upgrade.
+        bool valid = (uint)MenuCityId < (uint)Game.State.Cities.Count;
+        bool producing = valid && Game.State.Cities[MenuCityId].IsProducing;
+        bool upgrading = valid && Game.State.Cities[MenuCityId].IsUpgrading;
+
+        if (MenuAutoBuildToggleRect.HasPoint(screenPos))
+        {
+            ToggleAutoBuild(MenuSelectedBuildType);
+            return true;
+        }
+
+        if (MenuCancelUpgradeButtonRect.HasPoint(screenPos))
+        {
+            if (upgrading)
+            {
+                Game.EnqueueCommand(new CancelCityUpgradeCommand(MenuCityId)
+                { PlayerId = (int)Game.ActivePlayer });
+            }
+            return true;
+        }
+
+        if (MenuUpgradeButtonRect.HasPoint(screenPos))
+        {
+            if (valid && !producing && !upgrading)
+            {
+                City c = Game.State.Cities[MenuCityId];
+                byte level = UnitStats.NormalizeDevelopmentLevel(c.DevelopmentLevel);
+                if (UnitStats.UpgradeCost(level) > 0)
+                {
+                    Game.EnqueueCommand(new UpgradeCityCommand(MenuCityId)
+                    { PlayerId = (int)Game.ActivePlayer });
+                }
+            }
+            return true;
+        }
 
         if (MenuLightButtonRect.HasPoint(screenPos))
         {
@@ -431,24 +575,25 @@ public partial class InputController : Node
             {
                 Game.EnqueueCommand(new BuildUnitCommand(MenuCityId, null)
                 { PlayerId = (int)Game.ActivePlayer });
+                Game.EnqueueCommand(new SetAutoBuildCommand(MenuCityId, null)
+                { PlayerId = (int)Game.ActivePlayer });
             }
-            else
+            else if (!upgrading)
             {
+                MenuSelectedBuildType = UnitType.Light;
                 Game.EnqueueCommand(new BuildUnitCommand(MenuCityId, UnitType.Light)
                 { PlayerId = (int)Game.ActivePlayer });
             }
-            CloseMenu();
             return true;
         }
         if (MenuHeavyButtonRect.HasPoint(screenPos))
         {
-            if (!producing)
+            if (!producing && !upgrading)
             {
+                MenuSelectedBuildType = UnitType.Heavy;
                 Game.EnqueueCommand(new BuildUnitCommand(MenuCityId, UnitType.Heavy)
                 { PlayerId = (int)Game.ActivePlayer });
-                CloseMenu();
             }
-            // Producing: button is hidden, swallow click without acting.
             return true;
         }
         // Click outside menu = pass-through to normal handling, but close.
@@ -459,6 +604,26 @@ public partial class InputController : Node
         }
         return true;     // click inside menu but on no button: swallow
     }
+
+    private void ToggleAutoBuild(UnitType type)
+    {
+        if ((uint)MenuCityId >= (uint)Game.State.Cities.Count) return;
+        City c = Game.State.Cities[MenuCityId];
+        byte current = c.AutoBuildOrder;
+        byte want = (byte)((byte)type + 1);
+        UnitType? next = current == want ? null : type;
+        Game.EnqueueCommand(new SetAutoBuildCommand(MenuCityId, next)
+        { PlayerId = (int)Game.ActivePlayer });
+    }
+
+    private static UnitType SelectedBuildTypeFor(City c)
+    {
+        if (c.ProductionOrder != 0) return (UnitType)(c.ProductionOrder - 1);
+        if (c.AutoBuildOrder != 0) return (UnitType)(c.AutoBuildOrder - 1);
+        return UnitType.Light;
+    }
+
+    private static Rect2 HiddenRect() => new(new Vector2(-9999, -9999), Vector2.Zero);
 
     public void CloseMenu()
     {
@@ -520,6 +685,7 @@ public partial class InputController : Node
         switch (ek.Keycode)
         {
             case Key.Tab:
+                if (!Game.CanSwitchActivePlayer) break;
                 ExitRoadBuildMode();
                 Game.SelectedUnitIds.Clear();
                 CloseMenu();
@@ -544,8 +710,8 @@ public partial class InputController : Node
                 ToggleFullscreen();
                 break;
 
-            // Production shortcuts — only active when a production menu is
-            // open and the city is idle (not already building).
+            // Production shortcuts — active when a production menu is open
+            // and the city is not upgrading.
             case Key.Q:
                 TryKeyboardBuild(UnitType.Light);
                 break;
@@ -755,16 +921,18 @@ public partial class InputController : Node
             Game.SetRoadPreview(new List<int>(), false);
             return;
         }
-        if (!FogOfWar.IsVisible(st, Game.ActivePlayer, tx, ty))
-        {
-            Game.SetRoadPreview(new List<int>(), false);
-            return;
-        }
 
-        List<int> path = Pathfinding.FindRoadBuildPath(st.Map, u.TileX, u.TileY, tx, ty);
-        if (!RoadPathFullyVisible(st, path))
-            path.Clear();
-        Game.SetRoadPreview(path, path.Count > 0);
+        if (TryFindRoadBuildTarget(st, u, tx, ty, out _, out _, out List<int> path))
+        {
+            Game.SetRoadPreview(path, true);
+        }
+        else
+        {
+            var invalid = new List<int>();
+            if (FogOfWar.IsKnown(st, Game.ActivePlayer, tx, ty))
+                invalid.Add(ty * st.Map.Width + tx);
+            Game.SetRoadPreview(invalid, false);
+        }
     }
 
     private void CommitRoadBuildAt(Vector2 screenPos)
@@ -779,16 +947,73 @@ public partial class InputController : Node
         var (tx, ty) = MapRenderer.ScreenToTile(Game.ScreenToMap(screenPos), Vector2.Zero);
         ref readonly GameState st = ref Game.State;
         if (!st.Map.InBounds(tx, ty)) return;
-        if (!FogOfWar.IsVisible(st, Game.ActivePlayer, tx, ty)) return;
 
         Unit u = st.Units[unitId];
-        List<int> path = Pathfinding.FindRoadBuildPath(st.Map, u.TileX, u.TileY, tx, ty);
-        if (!RoadPathFullyVisible(st, path)) return;
-        if (path.Count == 0) return;
+        if (!TryFindRoadBuildTarget(st, u, tx, ty, out int targetX, out int targetY, out _))
+            return;
 
-        Game.EnqueueCommand(new BuildRoadCommand(unitId, tx, ty)
+        Game.EnqueueCommand(new BuildRoadCommand(unitId, targetX, targetY)
         { PlayerId = (int)Game.ActivePlayer });
         ExitRoadBuildMode();
+    }
+
+    private bool TryFindRoadBuildTarget(
+        in GameState st,
+        Unit u,
+        int desiredX,
+        int desiredY,
+        out int targetX,
+        out int targetY,
+        out List<int> path)
+    {
+        targetX = targetY = -1;
+        path = new List<int>();
+
+        const int maxRadius = 5;
+        for (int radius = 0; radius <= maxRadius; radius++)
+        {
+            int bestFlat = int.MaxValue;
+            int bestCost = int.MaxValue;
+            int bestX = -1, bestY = -1;
+            List<int>? bestPath = null;
+
+            for (int oy = -radius; oy <= radius; oy++)
+            {
+                for (int ox = -radius; ox <= radius; ox++)
+                {
+                    if (Manhattan(0, 0, ox, oy) != radius) continue;
+                    int cx = desiredX + ox, cy = desiredY + oy;
+                    if (!st.Map.InBounds(cx, cy)) continue;
+                    if (!FogOfWar.IsKnown(st, Game.ActivePlayer, cx, cy)) continue;
+
+                    List<int> candidatePath = Pathfinding.FindRoadBuildPath(st.Map, u.TileX, u.TileY, cx, cy);
+                    if (candidatePath.Count == 0) continue;
+                    if (!RoadPathFullyKnown(st, candidatePath)) continue;
+                    if (RoadPathHasVisibleBlocker(st, u.Id, candidatePath)) continue;
+
+                    int flat = cy * st.Map.Width + cx;
+                    int cost = candidatePath.Count;
+                    if (cost > bestCost) continue;
+                    if (cost == bestCost && flat >= bestFlat) continue;
+
+                    bestFlat = flat;
+                    bestCost = cost;
+                    bestX = cx;
+                    bestY = cy;
+                    bestPath = candidatePath;
+                }
+            }
+
+            if (bestPath is not null)
+            {
+                targetX = bestX;
+                targetY = bestY;
+                path = bestPath;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -860,26 +1085,55 @@ public partial class InputController : Node
             {
                 Game.EnqueueCommand(new BuildUnitCommand(MenuCityId, null)
                 { PlayerId = (int)Game.ActivePlayer });
-                CloseMenu();
+                Game.EnqueueCommand(new SetAutoBuildCommand(MenuCityId, null)
+                { PlayerId = (int)Game.ActivePlayer });
             }
             return;
         }
+        if (c.IsUpgrading) return;
 
+        MenuSelectedBuildType = type;
         Game.EnqueueCommand(new BuildUnitCommand(MenuCityId, type)
         { PlayerId = (int)Game.ActivePlayer });
-        CloseMenu();
     }
 
-    private bool RoadPathFullyVisible(in GameState st, List<int> path)
+    private bool RoadPathFullyKnown(in GameState st, List<int> path)
     {
         for (int i = 0; i < path.Count; i++)
         {
             int flat = path[i];
             int x = flat % st.Map.Width, y = flat / st.Map.Width;
-            if (!FogOfWar.IsVisible(st, Game.ActivePlayer, x, y)) return false;
+            if (!FogOfWar.IsKnown(st, Game.ActivePlayer, x, y)) return false;
         }
         return true;
     }
+
+    private bool RoadPathHasVisibleBlocker(in GameState st, int builderId, List<int> path)
+    {
+        for (int i = 0; i < path.Count; i++)
+        {
+            int flat = path[i];
+            int x = flat % st.Map.Width, y = flat / st.Map.Width;
+            if (!FogOfWar.IsVisible(st, Game.ActivePlayer, x, y)) continue;
+            if (IsTileOccupiedByOtherUnit(st, builderId, x, y)) return true;
+        }
+        return false;
+    }
+
+    private static bool IsTileOccupiedByOtherUnit(in GameState st, int selfId, int x, int y)
+    {
+        for (int i = 0; i < st.Units.Count; i++)
+        {
+            if (i == selfId) continue;
+            Unit other = st.Units[i];
+            if (!other.IsAlive) continue;
+            if (other.TileX == x && other.TileY == y) return true;
+        }
+        return false;
+    }
+
+    private static int Manhattan(int ax, int ay, int bx, int by)
+        => System.Math.Abs(ax - bx) + System.Math.Abs(ay - by);
 
     private static void ToggleFullscreen()
     {

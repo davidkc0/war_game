@@ -34,8 +34,8 @@ public class DeterminismTests
         // Cross-platform canary. CI on macOS and Windows must produce this
         // exact value. If either runner reports a different value, the sim
         // has a non-deterministic path — find it before merging.
-        // v11 schema (Phase 3 polish: + city names and unit progression).
-        const string Expected = "b1384eaa59977a2ab330e717dec8a8342ce255112df630de88fb9a48a2ca1379";
+        // v13 schema (Economy growth: + city development state).
+        const string Expected = "1aeece8232f3458f6c391ed29b3984e94d68078df0d32d97a82db8d6a93caff2";
         Assert.True(
             hashA == Expected,
             $"determinism hash drifted. expected={Expected} actual={hashA}");

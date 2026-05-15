@@ -40,6 +40,38 @@ public class UnitStatsTests
         => AssertCloseTo(UnitStats.CityEcoPerTick * FP.FromInt(3), UnitStats.CapitalEcoPerTick);
 
     [Theory]
+    [InlineData(false, 1, 1)]
+    [InlineData(false, 2, 2)]
+    [InlineData(false, 3, 3)]
+    [InlineData(true, 1, 3)]
+    [InlineData(true, 2, 4)]
+    [InlineData(true, 3, 5)]
+    public void CityDevelopment_EcoPerSecondLookup(bool capital, byte level, int expected)
+    {
+        var c = City.Create(0, 0, 0, PlayerId.Player1, capital);
+        c.DevelopmentLevel = level;
+        Assert.Equal(expected, UnitStats.EcoPerSecond(c));
+    }
+
+    [Theory]
+    [InlineData(1, 5)]
+    [InlineData(2, 8)]
+    [InlineData(3, 12)]
+    public void CityDevelopment_SupplyCapacityLookup(byte level, int expected)
+    {
+        var c = City.Create(0, 0, 0, PlayerId.Player1, isCapital: false);
+        c.DevelopmentLevel = level;
+        Assert.Equal(expected, UnitStats.SupplyCapacity(c));
+    }
+
+    [Theory]
+    [InlineData(1, 40)]
+    [InlineData(2, 90)]
+    [InlineData(3, 0)]
+    public void CityDevelopment_UpgradeCostLookup(byte level, int expected)
+        => Assert.Equal(expected, UnitStats.UpgradeCost(level));
+
+    [Theory]
     [InlineData(UnitType.Light, 60)]
     [InlineData(UnitType.Heavy, 150)]
     public void MaxHpLookup(UnitType t, int expected)
@@ -52,8 +84,8 @@ public class UnitStatsTests
         => Assert.Equal(expected, UnitStats.SupplyCost(t));
 
     [Theory]
-    [InlineData(UnitType.Light, 10)]
-    [InlineData(UnitType.Heavy, 30)]
+    [InlineData(UnitType.Light, 12)]
+    [InlineData(UnitType.Heavy, 36)]
     public void EcoCostLookup(UnitType t, int expected)
         => Assert.Equal(expected, UnitStats.EcoCost(t));
 

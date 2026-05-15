@@ -55,6 +55,8 @@ public static class Movement
             // during transit). Final destination stacking is handled below.
             if (IsTileOccupiedByEnemy(units, i, u.Owner, nx, ny))
                 continue;
+            if (u.Path.Count == 1 && IsTileOccupiedByAnyOtherUnit(units, i, nx, ny))
+                continue;
 
             FP baseSpeed = UnitStats.TilesPerTick(u.Type);
             FP terrainFactor = FP.FromRaw(UnitProgression.SpeedFactorRaw(u, nextTile));
@@ -92,6 +94,11 @@ public static class Movement
                     newProgress = FP.Zero;
                     break;
                 }
+                if (u.Path.Count == 1 && IsTileOccupiedByAnyOtherUnit(units, i, nfx, nfy))
+                {
+                    newProgress = FP.Zero;
+                    break;
+                }
             }
 
             u.ProgressRaw = u.Path.Count == 0 ? 0 : newProgress.Raw;
@@ -111,6 +118,18 @@ public static class Movement
             ref Unit other = ref units[j];
             if (!other.IsAlive) continue;
             if (other.Owner == myOwner) continue; // friendly — pass through
+            if (other.TileX == x && other.TileY == y) return true;
+        }
+        return false;
+    }
+
+    private static bool IsTileOccupiedByAnyOtherUnit(Span<Unit> units, int selfIndex, int x, int y)
+    {
+        for (int j = 0; j < units.Length; j++)
+        {
+            if (j == selfIndex) continue;
+            ref Unit other = ref units[j];
+            if (!other.IsAlive) continue;
             if (other.TileX == x && other.TileY == y) return true;
         }
         return false;

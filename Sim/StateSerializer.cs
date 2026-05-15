@@ -62,6 +62,10 @@ public static class StateSerializer
             WriteI32(stream, c.SupplyCapacity);
             WriteI64(stream, c.ProductionProgress.Raw);
             stream.WriteByte(c.ProductionOrder);
+            stream.WriteByte(c.AutoBuildOrder);
+            stream.WriteByte(c.DevelopmentLevel);
+            WriteI64(stream, c.DevelopmentProgress.Raw);
+            stream.WriteByte(c.DevelopmentOrder);
             WriteString(stream, c.Name);
             WriteI32(stream, c.CaptureHp);
         }

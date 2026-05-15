@@ -3,6 +3,7 @@ namespace WarGame;
 using Godot;
 using System.Collections.Generic;
 using WarGame.Sim;
+using WarGame.Sim.AI;
 using WarGame.Sim.Commands;
 using WarGame.Sim.Math;
 using WarGame.Sim.State;
@@ -22,11 +23,25 @@ using MapGenerator = WarGame.Sim.Generation.MapGenerator;
 public partial class Game : Node2D
 {
     private const float SimStepSeconds = 1f / GameSim.TicksPerSecond;
+    private const float TopHudHeight = 48f;
+    private const float BottomHudHeight = 36f;
+    private const float MinMapZoom = 0.5f;
+    private const float MaxMapZoom = 2.0f;
+    private const float CameraPanPixelsPerSecond = 720f;
+    private const float EdgeScrollMarginPx = 28f;
+    private const float MinimapSizePx = 180f;
+    private const float MinimapMarginPx = 12f;
+    private const int MaxAiCommandsPerTick = 16;
 
     private GameState _state;
     private float _accumulator;
     private Vector2 _viewportSize;
     private Vector2 _mapOrigin;
+    private bool _cameraInitialized;
+    private Vector2 _p1CameraOrigin;
+    private Vector2 _p2CameraOrigin;
+    private bool _p1CameraSaved;
+    private bool _p2CameraSaved;
 
     // Cached fonts — loaded once from Theme, not rebuilt per frame.
     private Font _fontPrimary = null!;
@@ -57,7 +72,8 @@ public partial class Game : Node2D
     // ---- Move destination marker (render-only) ---------------------------
     // When the player right-clicks, we briefly show a pulsing ring at the
     // target tile. Decays over time.
-    private int _moveTargetX = -1, _moveTargetY = -1;
+    private readonly List<int> _movePreviewPath = new();
+    private readonly List<int> _movePreviewDestinations = new();
     private float _moveMarkerLife;
     private const float MoveMarkerDuration = 0.8f;
 
@@ -67,9 +83,21 @@ public partial class Game : Node2D
 
     public void SetMoveTarget(int tx, int ty)
     {
-        _moveTargetX = tx;
-        _moveTargetY = ty;
+        _movePreviewPath.Clear();
+        _movePreviewDestinations.Clear();
+        if (_state.Map.InBounds(tx, ty))
+            _movePreviewDestinations.Add(ty * _state.Map.Width + tx);
         _moveMarkerLife = MoveMarkerDuration;
+    }
+
+    public void SetMovePreview(List<int> pathTiles, List<int> destinationTiles)
+    {
+        _movePreviewPath.Clear();
+        _movePreviewPath.AddRange(pathTiles);
+        _movePreviewDestinations.Clear();
+        _movePreviewDestinations.AddRange(destinationTiles);
+        _moveMarkerLife = MoveMarkerDuration;
+        QueueRedraw();
     }
 
     public override void _Ready()
@@ -117,25 +145,24 @@ public partial class Game : Node2D
     public void ZoomMap(Vector2 screenFocus, float factor)
     {
         Vector2 mapFocusBefore = ScreenToMap(screenFocus);
-        MapZoom = Mathf.Clamp(MapZoom * factor, 0.25f, 3.0f);
+        MapZoom = Mathf.Clamp(MapZoom * factor, MinMapZoom, MaxMapZoom);
         Vector2 screenFocusAfter = mapFocusBefore * MapZoom + _mapOrigin;
         _mapOrigin += screenFocus - screenFocusAfter;
+        ClampMapOrigin();
         QueueRedraw();
     }
 
     private void RecalculateLayout()
     {
         _viewportSize = GetViewportRect().Size;
-        if (_mapOrigin == Vector2.Zero && MapZoom == 1.0f)
+        if (!_cameraInitialized)
         {
-            // Initial center on first load
-            float mapPxW = _state.Map.Width * MapRenderer.TilePx;
-            float mapPxH = _state.Map.Height * MapRenderer.TilePx;
-            const float topReserve = 52f, bottomReserve = 40f;
-            float availH = _viewportSize.Y - topReserve - bottomReserve;
-            _mapOrigin = new Vector2(
-                Mathf.Max(0, (_viewportSize.X - mapPxW) * 0.5f),
-                topReserve + Mathf.Max(0, (availH - mapPxH) * 0.5f));
+            _cameraInitialized = true;
+            CenterCameraOnOwnedCapital(ActivePlayer, queueRedraw: false);
+        }
+        else
+        {
+            ClampMapOrigin();
         }
         QueueRedraw();
     }
@@ -143,15 +170,7 @@ public partial class Game : Node2D
     public override void _Process(double delta)
     {
         float dt = (float)delta;
-        
-        // Handle Camera Panning
-        float panSpeed = 600f * dt / MapZoom;
-        bool panned = false;
-        if (Input.IsPhysicalKeyPressed(Key.W) || Input.IsPhysicalKeyPressed(Key.Up)) { _mapOrigin.Y += panSpeed; panned = true; }
-        if (Input.IsPhysicalKeyPressed(Key.S) || Input.IsPhysicalKeyPressed(Key.Down)) { _mapOrigin.Y -= panSpeed; panned = true; }
-        if (Input.IsPhysicalKeyPressed(Key.A) || Input.IsPhysicalKeyPressed(Key.Left)) { _mapOrigin.X += panSpeed; panned = true; }
-        if (Input.IsPhysicalKeyPressed(Key.D) || Input.IsPhysicalKeyPressed(Key.Right)) { _mapOrigin.X -= panSpeed; panned = true; }
-        if (panned) QueueRedraw();
+        UpdateCamera(dt);
 
         _accumulator += dt;
         while (_accumulator >= SimStepSeconds)
@@ -159,10 +178,10 @@ public partial class Game : Node2D
             // Snapshot HP for combat flash detection before the sim tick.
             SnapshotHp();
 
-            // Drain any commands queued since last tick. The list is
-            // cleared after dispatch so each command runs exactly once.
-            List<Command>? cmds = _pendingCommands.Count > 0 ? new List<Command>(_pendingCommands) : null;
-            _pendingCommands.Clear();
+            // Drain human input and append deterministic AI commands when
+            // running single-player. Both go through the same sim command
+            // path, which keeps replay/lockstep assumptions intact.
+            List<Command>? cmds = BuildTickCommands();
             _state = GameSim.Step(_state, cmds);
             _accumulator -= SimStepSeconds;
 
@@ -202,6 +221,30 @@ public partial class Game : Node2D
         }
     }
 
+    private List<Command>? BuildTickCommands()
+    {
+        List<Command>? commands = null;
+        if (_pendingCommands.Count > 0)
+        {
+            commands = new List<Command>(_pendingCommands);
+            _pendingCommands.Clear();
+        }
+
+        if (MatchConfig.IsAiMatch && _state.Winner == PlayerId.None)
+        {
+            List<Command> ai = AiBrain.Decide(_state, PlayerId.Player2, MatchConfig.AiDifficulty);
+            if (ai.Count > 0)
+            {
+                commands ??= new List<Command>(ai.Count);
+                int take = ai.Count < MaxAiCommandsPerTick ? ai.Count : MaxAiCommandsPerTick;
+                for (int i = 0; i < take; i++)
+                    commands.Add(ai[i]);
+            }
+        }
+
+        return commands is { Count: > 0 } ? commands : null;
+    }
+
     private void DetectCombatFlashes()
     {
         for (int i = 0; i < _state.Units.Count; i++)
@@ -229,8 +272,16 @@ public partial class Game : Node2D
 
         MapRenderer.Draw(this, _state, Vector2.Zero, ActivePlayer);
 
+        // Tile truth appears only when the player is interacting with the
+        // board or a tactical state needs exact tile readability.
+        DrawCaptureTiles();
+        DrawSelectedUnitTiles();
+
         // Road/bridge preview from B build mode.
         DrawRoadPreview();
+
+        // General tile hover for precise command readability.
+        DrawHoverTile();
 
         // City hover highlight.
         DrawCityHover();
@@ -274,6 +325,7 @@ public partial class Game : Node2D
         DrawHudTop();
         DrawHudBottom();
         DrawSelectedUnitPanel();
+        DrawMinimap();
 
         if (_input is { PromotionMenuVisible: true })
             DrawPromotionMenu(_input);
@@ -285,6 +337,122 @@ public partial class Game : Node2D
         // Victory banner — drawn last so it sits above all gameplay.
         if (_state.Winner != PlayerId.None)
             DrawVictoryBanner(_state.Winner);
+    }
+
+    private void UpdateCamera(float dt)
+    {
+        Vector2 pan = Vector2.Zero;
+        bool allowKeyboardPan = _input is null || (!_input.MenuVisible && !_input.PromotionMenuVisible);
+        if (allowKeyboardPan)
+        {
+            if (Input.IsPhysicalKeyPressed(Key.W) || Input.IsPhysicalKeyPressed(Key.Up)) pan.Y += 1f;
+            if (Input.IsPhysicalKeyPressed(Key.S) || Input.IsPhysicalKeyPressed(Key.Down)) pan.Y -= 1f;
+            if (Input.IsPhysicalKeyPressed(Key.A) || Input.IsPhysicalKeyPressed(Key.Left)) pan.X += 1f;
+            if (Input.IsPhysicalKeyPressed(Key.D) || Input.IsPhysicalKeyPressed(Key.Right)) pan.X -= 1f;
+        }
+
+        Vector2 mouse = GetViewport().GetMousePosition();
+        float playableBottom = _viewportSize.Y - BottomHudHeight;
+        bool mouseInPlayableBand = mouse.Y >= TopHudHeight && mouse.Y <= playableBottom;
+        if (mouseInPlayableBand)
+        {
+            if (mouse.X <= EdgeScrollMarginPx) pan.X += 1f;
+            else if (mouse.X >= _viewportSize.X - EdgeScrollMarginPx) pan.X -= 1f;
+
+            if (mouse.Y <= TopHudHeight + EdgeScrollMarginPx) pan.Y += 1f;
+            else if (mouse.Y >= playableBottom - EdgeScrollMarginPx) pan.Y -= 1f;
+        }
+
+        if (pan == Vector2.Zero) return;
+        _mapOrigin += pan.Normalized() * CameraPanPixelsPerSecond * dt;
+        ClampMapOrigin();
+        QueueRedraw();
+    }
+
+    private void ClampMapOrigin()
+    {
+        if (_state.Map.Width <= 0 || _state.Map.Height <= 0) return;
+
+        float mapScreenW = _state.Map.Width * MapRenderer.TilePx * MapZoom;
+        float mapScreenH = _state.Map.Height * MapRenderer.TilePx * MapZoom;
+        float playableTop = TopHudHeight;
+        float playableBottom = Mathf.Max(playableTop, _viewportSize.Y - BottomHudHeight);
+        float playableH = playableBottom - playableTop;
+
+        if (mapScreenW <= _viewportSize.X)
+        {
+            _mapOrigin.X = (_viewportSize.X - mapScreenW) * 0.5f;
+        }
+        else
+        {
+            _mapOrigin.X = Mathf.Clamp(_mapOrigin.X, _viewportSize.X - mapScreenW, 0f);
+        }
+
+        if (mapScreenH <= playableH)
+        {
+            _mapOrigin.Y = playableTop + (playableH - mapScreenH) * 0.5f;
+        }
+        else
+        {
+            _mapOrigin.Y = Mathf.Clamp(_mapOrigin.Y, playableBottom - mapScreenH, playableTop);
+        }
+    }
+
+    private void CenterCameraOnTile(int tileX, int tileY, bool queueRedraw = true)
+    {
+        Vector2 mapCenter = MapRenderer.TileCenter(tileX, tileY, Vector2.Zero);
+        Vector2 screenCenter = new(_viewportSize.X * 0.5f,
+            TopHudHeight + ((_viewportSize.Y - TopHudHeight - BottomHudHeight) * 0.5f));
+        _mapOrigin = screenCenter - mapCenter * MapZoom;
+        ClampMapOrigin();
+        if (queueRedraw) QueueRedraw();
+    }
+
+    private void CenterCameraOnOwnedCapital(PlayerId owner, bool queueRedraw = true)
+    {
+        for (int i = 0; i < _state.Cities.Count; i++)
+        {
+            City c = _state.Cities[i];
+            if (c.Owner == owner && c.IsCapital)
+            {
+                CenterCameraOnTile(c.TileX, c.TileY, queueRedraw);
+                return;
+            }
+        }
+
+        CenterCameraOnTile(_state.Map.Width / 2, _state.Map.Height / 2, queueRedraw);
+    }
+
+    private void SaveCameraFor(PlayerId player)
+    {
+        if (player == PlayerId.Player1)
+        {
+            _p1CameraOrigin = _mapOrigin;
+            _p1CameraSaved = true;
+        }
+        else if (player == PlayerId.Player2)
+        {
+            _p2CameraOrigin = _mapOrigin;
+            _p2CameraSaved = true;
+        }
+    }
+
+    private bool TryRestoreCameraFor(PlayerId player)
+    {
+        if (player == PlayerId.Player1 && _p1CameraSaved)
+        {
+            _mapOrigin = _p1CameraOrigin;
+            ClampMapOrigin();
+            return true;
+        }
+        if (player == PlayerId.Player2 && _p2CameraSaved)
+        {
+            _mapOrigin = _p2CameraOrigin;
+            ClampMapOrigin();
+            return true;
+        }
+
+        return false;
     }
 
     public void SetRoadPreview(List<int> path, bool valid)
@@ -328,44 +496,169 @@ public partial class Game : Node2D
     private void DrawMoveMarker()
     {
         if (_moveMarkerLife <= 0f) return;
-        if (_moveTargetX < 0 || _moveTargetY < 0) return;
-        if (!FogOfWar.IsKnown(_state, ActivePlayer, _moveTargetX, _moveTargetY)) return;
 
-        Vector2 center = MapRenderer.TileCenter(_moveTargetX, _moveTargetY, Vector2.Zero);
         float frac = _moveMarkerLife / MoveMarkerDuration; // 1 → 0
-        // Pulse: small ring that expands and fades.
-        float radius = MapRenderer.TilePx * 0.3f + (1f - frac) * MapRenderer.TilePx * 0.2f;
-        Color c = Theme.MoveMarker;
-        c.A *= frac;
-        DrawArc(center, radius, 0, Mathf.Tau, 24, c, 2f);
-        // Inner dot.
-        Color dot = Theme.MoveMarker;
-        dot.A *= frac * 0.5f;
-        DrawCircle(center, 3f / MapZoom, dot);
+        Color pathColor = Theme.MoveMarker;
+        pathColor.A *= frac * 0.70f;
+        int prev = -1;
+        for (int i = 0; i < _movePreviewPath.Count; i++)
+        {
+            int flat = _movePreviewPath[i];
+            int x = flat % _state.Map.Width, y = flat / _state.Map.Width;
+            if (!FogOfWar.IsKnown(_state, ActivePlayer, x, y)) continue;
+            Vector2 center = MapRenderer.TileCenter(x, y, Vector2.Zero);
+            if (prev >= 0 && AreAdjacent(prev, flat))
+            {
+                int px = prev % _state.Map.Width, py = prev / _state.Map.Width;
+                DrawLine(MapRenderer.TileCenter(px, py, Vector2.Zero), center, pathColor, 3.0f / MapZoom, true);
+            }
+            DrawCircle(center, 3.2f / MapZoom, pathColor);
+            prev = flat;
+        }
+
+        for (int i = 0; i < _movePreviewDestinations.Count; i++)
+        {
+            int flat = _movePreviewDestinations[i];
+            int x = flat % _state.Map.Width, y = flat / _state.Map.Width;
+            if (!FogOfWar.IsKnown(_state, ActivePlayer, x, y)) continue;
+
+            Vector2 center = MapRenderer.TileCenter(x, y, Vector2.Zero);
+            // Pulse: small ring that expands and fades.
+            float radius = MapRenderer.TilePx * 0.3f + (1f - frac) * MapRenderer.TilePx * 0.2f;
+            Color c = Theme.MoveMarker;
+            c.A *= frac;
+            DrawArc(center, radius, 0, Mathf.Tau, 24, c, 2f);
+            DrawArc(center, MapRenderer.TilePx * 0.42f, 0, Mathf.Tau, 24, c, 1.4f / MapZoom);
+            // Inner dot.
+            Color dot = Theme.MoveMarker;
+            dot.A *= frac * 0.65f;
+            DrawCircle(center, 4f / MapZoom, dot);
+        }
     }
 
     private void DrawRoadPreview()
     {
         if (_roadPreviewPath.Count == 0) return;
 
+        if (!_roadPreviewValid)
+        {
+            int flat = _roadPreviewPath[^1];
+            int x = flat % _state.Map.Width, y = flat / _state.Map.Width;
+            if (!FogOfWar.IsKnown(_state, ActivePlayer, x, y)) return;
+
+            Rect2 r = new(
+                MapRenderer.TileTopLeft(x, y, Vector2.Zero) + new Vector2(MapRenderer.TilePx * 0.10f, MapRenderer.TilePx * 0.10f),
+                new Vector2(MapRenderer.TilePx * 0.80f, MapRenderer.TilePx * 0.80f));
+            Color fill = Theme.InvalidPreview;
+            fill.A = 0.20f;
+            DrawRect(r, fill);
+            Color edge = Theme.HpBarLow;
+            edge.A = 0.95f;
+            DrawRect(r, edge, filled: false, width: 2.0f / MapZoom);
+            DrawLine(r.Position, r.Position + r.Size, edge, 2f / MapZoom, true);
+            DrawLine(r.Position + new Vector2(r.Size.X, 0f), r.Position + new Vector2(0f, r.Size.Y), edge, 2f / MapZoom, true);
+            return;
+        }
+
+        int prev = -1;
         for (int i = 0; i < _roadPreviewPath.Count; i++)
         {
             int flat = _roadPreviewPath[i];
             int x = flat % _state.Map.Width, y = flat / _state.Map.Width;
-            if (!FogOfWar.IsVisible(_state, ActivePlayer, x, y)) continue;
+            if (!FogOfWar.IsKnown(_state, ActivePlayer, x, y)) continue;
             TileType t = _state.Map.GetTileUnchecked(x, y);
-            Color c = !_roadPreviewValid
-                ? Theme.InvalidPreview
-                : Pathfinding.IsBridgeTerrain(t) ? Theme.BridgePreview : Theme.RoadPreview;
+            Color c = Pathfinding.IsBridgeTerrain(t) ? Theme.BridgePreview : Theme.RoadPreview;
             c.A *= i == _roadPreviewPath.Count - 1 ? 1.0f : 0.72f;
-            Rect2 r = new(
-                MapRenderer.TileTopLeft(x, y, Vector2.Zero) + new Vector2(MapRenderer.TilePx * 0.12f, MapRenderer.TilePx * 0.12f),
-                new Vector2(MapRenderer.TilePx * 0.76f, MapRenderer.TilePx * 0.76f));
-            DrawRect(r, c);
-            Color edge = _roadPreviewValid ? Theme.SelectRing : Theme.HpBarLow;
-            edge.A = 0.9f;
-            DrawRect(r, edge, filled: false, width: 1.5f / MapZoom);
+            Vector2 center = MapRenderer.TileCenter(x, y, Vector2.Zero);
+            if (prev >= 0 && AreAdjacent(prev, flat))
+            {
+                int px = prev % _state.Map.Width, py = prev / _state.Map.Width;
+                Color line = c;
+                line.A *= 0.85f;
+                DrawLine(MapRenderer.TileCenter(px, py, Vector2.Zero), center, line, 5.0f / MapZoom, true);
+            }
+
+            DrawCircle(center, 4.2f / MapZoom, c);
+            prev = flat;
         }
+
+        int target = _roadPreviewPath[^1];
+        int tx = target % _state.Map.Width, ty = target / _state.Map.Width;
+        if (FogOfWar.IsKnown(_state, ActivePlayer, tx, ty))
+        {
+            Vector2 center = MapRenderer.TileCenter(tx, ty, Vector2.Zero);
+            Color edge = Theme.SelectRing;
+            edge.A = 0.95f;
+            DrawArc(center, MapRenderer.TilePx * 0.38f, 0, Mathf.Tau, 28, edge, 2.0f / MapZoom);
+        }
+    }
+
+    private void DrawCaptureTiles()
+    {
+        for (int i = 0; i < _state.Cities.Count; i++)
+        {
+            City c = _state.Cities[i];
+            if (c.CaptureHp >= c.MaxCaptureHp) continue;
+            if (!FogOfWar.IsVisible(_state, ActivePlayer, c.TileX, c.TileY)) continue;
+
+            TileType tile = FogOfWar.GetKnownTileType(_state, ActivePlayer, c.TileX, c.TileY);
+            DrawTileTruth(c.TileX, c.TileY, HoverBaseTile(tile), alphaScale: 0.70f, borderScale: 1.05f);
+        }
+    }
+
+    private void DrawSelectedUnitTiles()
+    {
+        foreach (int id in SelectedUnitIds)
+        {
+            if ((uint)id >= (uint)_state.Units.Count) continue;
+            Unit u = _state.Units[id];
+            if (!u.IsAlive) continue;
+            if (!FogOfWar.IsVisible(_state, ActivePlayer, u.TileX, u.TileY)) continue;
+
+            TileType tile = FogOfWar.GetKnownTileType(_state, ActivePlayer, u.TileX, u.TileY);
+            DrawTileTruth(u.TileX, u.TileY, HoverBaseTile(tile), alphaScale: 0.52f, borderScale: 0.84f);
+        }
+    }
+
+    private void DrawHoverTile()
+    {
+        Vector2 mouse = GetViewport().GetMousePosition();
+        if (mouse.Y < TopHudHeight || mouse.Y > _viewportSize.Y - BottomHudHeight) return;
+        if (_input is { MenuVisible: true } && _input.MenuRect.HasPoint(mouse)) return;
+        if (_input is { PromotionMenuVisible: true } && _input.PromotionMenuRect.HasPoint(mouse)) return;
+
+        var (x, y) = MapRenderer.ScreenToTile(ScreenToMap(mouse), Vector2.Zero);
+        if (!_state.Map.InBounds(x, y)) return;
+        if (!FogOfWar.IsKnown(_state, ActivePlayer, x, y)) return;
+
+        TileType tile = FogOfWar.GetKnownTileType(_state, ActivePlayer, x, y);
+        DrawTileTruth(x, y, HoverBaseTile(tile), alphaScale: 1.0f, borderScale: 1.0f);
+    }
+
+    private void DrawTileTruth(int x, int y, TileType baseTile, float alphaScale, float borderScale)
+    {
+        Rect2 r = new(MapRenderer.TileTopLeft(x, y, Vector2.Zero), new Vector2(MapRenderer.TilePx, MapRenderer.TilePx));
+        Color fill = Theme.ForTileEdgeHighlight(baseTile);
+        fill.A = 0.34f * alphaScale;
+        DrawRect(r, fill);
+        Color edge = fill;
+        edge.A = 0.88f * alphaScale;
+        DrawRect(r, edge, filled: false, width: 1.6f * borderScale / MapZoom);
+    }
+
+    private static TileType HoverBaseTile(TileType tile) => tile switch
+    {
+        TileType.Road => TileType.Plains,
+        TileType.Bridge => TileType.Water,
+        TileType.MountainPeak => TileType.Mountain,
+        _ => tile,
+    };
+
+    private bool AreAdjacent(int a, int b)
+    {
+        int ax = a % _state.Map.Width, ay = a / _state.Map.Width;
+        int bx = b % _state.Map.Width, by = b / _state.Map.Width;
+        return System.Math.Abs(ax - bx) + System.Math.Abs(ay - by) == 1;
     }
 
     // ---- City hover highlight --------------------------------------------
@@ -437,7 +730,7 @@ public partial class Game : Node2D
 
         string title = !validCity ? "Production" : c.DisplayName;
         DrawString(_fontSemiBold, ic.MenuRect.Position + new Vector2(12, 22),
-            title, HorizontalAlignment.Left, 150, 14, Theme.HudText);
+            title, HorizontalAlignment.Left, 170, 14, Theme.HudText);
 
         if (validCity)
         {
@@ -457,49 +750,77 @@ public partial class Game : Node2D
                 draft, HorizontalAlignment.Left, (int)ic.MenuNameInputRect.Size.X - 16, 13, draftColor);
         }
 
-        if (validCity && c.IsProducing)
+        if (validCity)
         {
-            // ---- Producing layout ----
-            // The text and progress bar live ABOVE the single Cancel button.
-            // Layout (relative to menu top):
-            //   0–28:  title row
-            //  28–36:  gap
-            //  36–54:  progress label
-            //  54–60:  gap
-            //  60–70:  progress bar
-            //  70–80:  gap
-            //  80–112: cancel button
-            // 112–124: bottom padding
+            byte level = UnitStats.NormalizeDevelopmentLevel(c.DevelopmentLevel);
+            int income = UnitStats.EcoPerSecond(c);
+            int citySupply = UnitStats.SupplyCapacity(c);
+            int used = CountPlayerSupplyUsed(c.Owner);
+            int cap = CountPlayerSupplyCapacity(c.Owner);
+
+            DrawString(_fontPrimary, ic.MenuRect.Position + new Vector2(12, 46 + contentY),
+                $"Level {level}   Income: +{income} ECO/sec",
+                HorizontalAlignment.Left, (int)ic.MenuRect.Size.X - 24, 12, Theme.HudTextDim);
+            DrawString(_fontPrimary, ic.MenuRect.Position + new Vector2(12, 66 + contentY),
+                $"Supply: {used}/{cap}   This city: +{citySupply}",
+                HorizontalAlignment.Left, (int)ic.MenuRect.Size.X - 24, 12, Theme.HudTextDim);
+        }
+
+        if (validCity && c.IsUpgrading)
+        {
+            int fromLevel = UnitStats.NormalizeDevelopmentLevel(c.DevelopmentLevel);
+            int costEco = UnitStats.UpgradeCost((byte)fromLevel);
+            float frac = costEco > 0
+                ? Mathf.Clamp((float)(c.DevelopmentProgress.ToDoubleUnsafe() / costEco), 0f, 1f)
+                : 0f;
+
+            DrawString(_fontPrimary, ic.MenuRect.Position + new Vector2(12, 122 + contentY),
+                $"Upgrading to Level {c.DevelopmentOrder}   {(int)(frac * 100f)}%",
+                HorizontalAlignment.Left, -1, 13, Theme.HudText);
+
+            float barW = ic.MenuRect.Size.X - 24f;
+            Vector2 barTl = ic.MenuRect.Position + new Vector2(12, 132 + contentY);
+            DrawRect(new Rect2(barTl, new Vector2(barW, 8)), Theme.ProgressBarBg);
+            DrawRect(new Rect2(barTl, new Vector2(barW * frac, 8)), Theme.SelectRing);
+
+            DrawButton(ic.MenuCancelUpgradeButtonRect, "Cancel upgrade", warning: true);
+        }
+        else if (validCity && c.IsProducing)
+        {
             UnitType type = (UnitType)(c.ProductionOrder - 1);
             int costEco = UnitStats.EcoCost(type);
             float frac = Mathf.Clamp((float)(c.ProductionProgress.ToDoubleUnsafe() / costEco), 0f, 1f);
 
             // Progress label.
             string label = $"Building {type}   {(int)(frac * 100f)}%";
-            DrawString(_fontPrimary, ic.MenuRect.Position + new Vector2(12, 50 + contentY),
+            DrawString(_fontPrimary, ic.MenuRect.Position + new Vector2(12, 122 + contentY),
                 label, HorizontalAlignment.Left, -1, 13, Theme.HudText);
 
             // Progress bar.
             float barW = ic.MenuRect.Size.X - 24f;
-            Vector2 barTl = ic.MenuRect.Position + new Vector2(12, 60 + contentY);
+            Vector2 barTl = ic.MenuRect.Position + new Vector2(12, 132 + contentY);
             DrawRect(new Rect2(barTl, new Vector2(barW, 8)), Theme.ProgressBarBg);
             DrawRect(new Rect2(barTl, new Vector2(barW * frac, 8)), Theme.ForPlayer(c.Owner));
 
             // Cancel order button.
             DrawButton(ic.MenuLightButtonRect, "Cancel order  [Q]", warning: true);
         }
-        else
+        else if (validCity)
         {
-            // ---- Idle layout ----
-            // Layout (relative to menu top):
-            //   0–28:  title row
-            //  28–36:  gap
-            //  36–68:  light button
-            //  68–76:  gap
-            //  76–108: heavy button
-            // 108–120: bottom padding
             DrawButton(ic.MenuLightButtonRect, $"Build Light  ({UnitStats.LightEcoCost} ECO)  [Q]");
             DrawButton(ic.MenuHeavyButtonRect, $"Build Heavy ({UnitStats.HeavyEcoCost} ECO)  [W]");
+            byte level = UnitStats.NormalizeDevelopmentLevel(c.DevelopmentLevel);
+            int upgradeCost = UnitStats.UpgradeCost(level);
+            bool canUpgrade = upgradeCost > 0;
+            string label = canUpgrade
+                ? $"Upgrade to Level {level + 1} ({upgradeCost} ECO)"
+                : "Max level";
+            DrawButton(ic.MenuUpgradeButtonRect, label, disabled: !canUpgrade);
+        }
+
+        if (validCity)
+        {
+            DrawButton(ic.MenuAutoBuildToggleRect, AutoBuildLabel(c, ic.MenuSelectedBuildType));
         }
 
         // Close "x" button.
@@ -508,15 +829,22 @@ public partial class Game : Node2D
             "✕", HorizontalAlignment.Left, -1, 12, Theme.HudTextDim);
     }
 
-    private void DrawButton(Rect2 r, string label, bool warning = false)
+    private static string AutoBuildLabel(City c, UnitType type)
+    {
+        byte want = (byte)((byte)type + 1);
+        string state = c.AutoBuildOrder == want ? "ON" : "off";
+        return $"Auto-build {type}: {state}";
+    }
+
+    private void DrawButton(Rect2 r, string label, bool warning = false, bool disabled = false)
     {
         Color edge = warning ? Theme.CancelBtnEdge : Theme.HudPanelEdge;
         Color bg = Theme.HudPanel;
-        bg.A = 0.5f;
+        bg.A = disabled ? 0.26f : 0.5f;
         DrawRect(r, bg, filled: true);
         DrawRect(r, edge, filled: false, width: 1f);
 
-        Color text = warning ? Theme.WarningText : Theme.HudText;
+        Color text = disabled ? Theme.HudTextDim : warning ? Theme.WarningText : Theme.HudText;
         // Vertically center text inside the button.
         DrawString(_fontPrimary, r.Position + new Vector2(10, 21),
             label, HorizontalAlignment.Left, -1, 13, text);
@@ -565,6 +893,112 @@ public partial class Game : Node2D
                 HorizontalAlignment.Left, -1, 12, Theme.SelectRing);
         }
     }
+
+    private void DrawMinimap()
+    {
+        if (_state.Map.Width <= 0 || _state.Map.Height <= 0) return;
+
+        float maxAvailableH = _viewportSize.Y - TopHudHeight - BottomHudHeight - MinimapMarginPx * 2f;
+        float size = Mathf.Min(MinimapSizePx, Mathf.Min(_viewportSize.X * 0.22f, maxAvailableH * 0.45f));
+        if (size < 96f) return;
+
+        Rect2 panel = new(
+            new Vector2(_viewportSize.X - size - MinimapMarginPx,
+                _viewportSize.Y - BottomHudHeight - size - MinimapMarginPx),
+            new Vector2(size, size));
+        DrawRect(panel, Theme.MenuBg);
+        DrawRect(panel, Theme.MenuBorder, filled: false, width: 1f);
+
+        const float pad = 7f;
+        float innerW = panel.Size.X - pad * 2f;
+        float innerH = panel.Size.Y - pad * 2f;
+        float cell = Mathf.Min(innerW / _state.Map.Width, innerH / _state.Map.Height);
+        Vector2 mapPos = panel.Position + new Vector2(
+            (panel.Size.X - _state.Map.Width * cell) * 0.5f,
+            (panel.Size.Y - _state.Map.Height * cell) * 0.5f);
+        Vector2 cellSize = new(Mathf.Ceil(cell), Mathf.Ceil(cell));
+
+        for (int y = 0; y < _state.Map.Height; y++)
+        {
+            for (int x = 0; x < _state.Map.Width; x++)
+            {
+                VisibilityState vis = FogOfWar.GetVisibility(_state, ActivePlayer, x, y);
+                Color tile = MinimapTileColor(x, y, vis);
+                Rect2 r = new(mapPos + new Vector2(x * cell, y * cell), cellSize);
+                DrawRect(r, tile);
+
+                if (vis == VisibilityState.Hidden) continue;
+                PlayerId owner = FogOfWar.GetKnownTileOwner(_state, ActivePlayer, x, y);
+                if (owner == PlayerId.None) continue;
+                Color tint = Theme.ForPlayer(owner);
+                tint.A = vis == VisibilityState.Visible ? 0.26f : 0.14f;
+                DrawRect(r, tint);
+            }
+        }
+
+        DrawMinimapCities(mapPos, cell);
+        DrawMinimapUnits(mapPos, cell);
+        DrawMinimapViewport(mapPos, cell);
+    }
+
+    private Color MinimapTileColor(int x, int y, VisibilityState vis)
+    {
+        if (vis == VisibilityState.Hidden) return Theme.FogHidden;
+
+        TileType t = FogOfWar.GetKnownTileType(_state, ActivePlayer, x, y);
+        Color color = Theme.ForTile(t);
+        if (vis == VisibilityState.Explored)
+        {
+            color = Dim(color, 0.42f);
+            color.A = 0.78f;
+        }
+        return color;
+    }
+
+    private void DrawMinimapCities(Vector2 mapPos, float cell)
+    {
+        for (int i = 0; i < _state.Cities.Count; i++)
+        {
+            City c = _state.Cities[i];
+            if (!FogOfWar.IsKnown(_state, ActivePlayer, c.TileX, c.TileY)) continue;
+            VisibilityState vis = FogOfWar.GetVisibility(_state, ActivePlayer, c.TileX, c.TileY);
+            PlayerId owner = FogOfWar.GetKnownTileOwner(_state, ActivePlayer, c.TileX, c.TileY);
+            Color color = Theme.ForPlayer(owner);
+            if (vis == VisibilityState.Explored) color = Dim(color, 0.58f);
+            float mark = c.IsCapital ? 5f : 3.5f;
+            Vector2 center = mapPos + new Vector2((c.TileX + 0.5f) * cell, (c.TileY + 0.5f) * cell);
+            DrawRect(new Rect2(center - new Vector2(mark * 0.5f, mark * 0.5f), new Vector2(mark, mark)), color);
+        }
+    }
+
+    private void DrawMinimapUnits(Vector2 mapPos, float cell)
+    {
+        for (int i = 0; i < _state.Units.Count; i++)
+        {
+            Unit u = _state.Units[i];
+            if (!u.IsAlive) continue;
+            if (!FogOfWar.IsVisible(_state, ActivePlayer, u.TileX, u.TileY)) continue;
+            Vector2 center = mapPos + new Vector2((u.TileX + 0.5f) * cell, (u.TileY + 0.5f) * cell);
+            DrawCircle(center, u.Owner == ActivePlayer ? 2.4f : 2.0f, Theme.ForPlayer(u.Owner));
+        }
+    }
+
+    private void DrawMinimapViewport(Vector2 mapPos, float cell)
+    {
+        Vector2 a = ScreenToMap(new Vector2(0f, TopHudHeight));
+        Vector2 b = ScreenToMap(new Vector2(_viewportSize.X, _viewportSize.Y - BottomHudHeight));
+        float minX = Mathf.Clamp(Mathf.Min(a.X, b.X) / MapRenderer.TilePx, 0f, _state.Map.Width);
+        float maxX = Mathf.Clamp(Mathf.Max(a.X, b.X) / MapRenderer.TilePx, 0f, _state.Map.Width);
+        float minY = Mathf.Clamp(Mathf.Min(a.Y, b.Y) / MapRenderer.TilePx, 0f, _state.Map.Height);
+        float maxY = Mathf.Clamp(Mathf.Max(a.Y, b.Y) / MapRenderer.TilePx, 0f, _state.Map.Height);
+        Rect2 view = new(
+            mapPos + new Vector2(minX * cell, minY * cell),
+            new Vector2(Mathf.Max(2f, (maxX - minX) * cell), Mathf.Max(2f, (maxY - minY) * cell)));
+        DrawRect(view, Theme.SelectRing, filled: false, width: 1.2f);
+    }
+
+    private static Color Dim(Color c, float factor)
+        => new(c.R * factor, c.G * factor, c.B * factor, c.A);
 
     private void DrawPromotionMenu(InputController ic)
     {
@@ -707,8 +1141,11 @@ public partial class Game : Node2D
         DrawString(_fontSemiBold, chipCenter + new Vector2(14, 5), chipLabel,
             HorizontalAlignment.Left, -1, bodySize, Theme.HudText);
 
-        // Tab hint far right.
-        DrawString(_fontPrimary, new Vector2(_viewportSize.X - 14, 30), "[Tab]",
+        // Mode hint far right.
+        string modeHint = CanSwitchActivePlayer
+            ? "[Tab]"
+            : $"AI {MatchConfig.AiDifficulty}";
+        DrawString(_fontPrimary, new Vector2(_viewportSize.X - 14, 30), modeHint,
             HorizontalAlignment.Right, -1, 11, Theme.HudTextDim);
     }
 
@@ -751,7 +1188,7 @@ public partial class Game : Node2D
         if (p == ActivePlayer)
         {
             FP eco = _state.Players[(int)p].Eco;
-            return $"{label}   ECO: {eco.ToInt()}   Units: {CountPlayerUnits(p)}   Cut off: {CountCutOffUnits(p)}   Cities: {CountPlayerCities(p)}";
+            return $"{label}   ECO: {eco.ToInt()}   +{CountPlayerEcoPerSecond(p)}/s   Supply: {CountPlayerSupplyUsed(p)}/{CountPlayerSupplyCapacity(p)}   Units: {CountPlayerUnits(p)}   Cut off: {CountCutOffUnits(p)}   Cities: {CountPlayerCities(p)}   Upg: {CountActiveCityUpgrades(p)}";
         }
 
         return $"{label}   ECO: ?   Visible units: {CountVisibleUnits(p)}   Cut off: ?   Known cities: {CountKnownCities(p)}";
@@ -776,6 +1213,56 @@ public partial class Game : Node2D
             count++;
         }
         return count;
+    }
+
+    private int CountPlayerEcoPerSecond(PlayerId p)
+    {
+        int income = 0;
+        for (int i = 0; i < _state.Cities.Count; i++)
+        {
+            City c = _state.Cities[i];
+            if (c.Owner != p) continue;
+            if (_state.Map.GetTileUnchecked(c.TileX, c.TileY).IsFortTile()) continue;
+            income += UnitStats.EcoPerSecond(c);
+        }
+        return income;
+    }
+
+    private int CountActiveCityUpgrades(PlayerId p)
+    {
+        int count = 0;
+        for (int i = 0; i < _state.Cities.Count; i++)
+        {
+            City c = _state.Cities[i];
+            if (c.Owner != p || !c.IsUpgrading) continue;
+            if (_state.Map.GetTileUnchecked(c.TileX, c.TileY).IsFortTile()) continue;
+            count++;
+        }
+        return count;
+    }
+
+    private int CountPlayerSupplyUsed(PlayerId p)
+    {
+        int used = 0;
+        for (int i = 0; i < _state.Units.Count; i++)
+        {
+            Unit u = _state.Units[i];
+            if (!u.IsAlive || u.Owner != p) continue;
+            used += UnitStats.SupplyCost(u.Type);
+        }
+        return used;
+    }
+
+    private int CountPlayerSupplyCapacity(PlayerId p)
+    {
+        int cap = 0;
+        for (int i = 0; i < _state.Cities.Count; i++)
+        {
+            City c = _state.Cities[i];
+            if (c.Owner != p) continue;
+            cap += UnitStats.SupplyCapacity(c);
+        }
+        return cap;
     }
 
     private int CountVisibleUnits(PlayerId p)
@@ -818,10 +1305,15 @@ public partial class Game : Node2D
     // ---- Public hooks for InputController (Step 8) -----------------------
     public Vector2 MapOrigin => _mapOrigin;
     public ref readonly GameState State => ref _state;
+    public bool CanSwitchActivePlayer => !MatchConfig.IsAiMatch;
     public void EnqueueCommand(Command cmd) => _pendingCommands.Add(cmd);
     public void SwitchActivePlayer()
     {
+        if (!CanSwitchActivePlayer) return;
+        SaveCameraFor(ActivePlayer);
         ActivePlayer = ActivePlayer == PlayerId.Player1 ? PlayerId.Player2 : PlayerId.Player1;
+        if (!TryRestoreCameraFor(ActivePlayer))
+            CenterCameraOnOwnedCapital(ActivePlayer, queueRedraw: false);
         QueueRedraw();
     }
 }

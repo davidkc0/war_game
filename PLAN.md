@@ -4,7 +4,7 @@
 
 ---
 
-## 0.0 Current Status & Resume Guide *(updated 2026-05-03)*
+## 0.0 Current Status & Resume Guide *(updated 2026-05-04)*
 
 ### Where we are
 
@@ -22,7 +22,17 @@
 
 **Phase 3 Polish / Progression: ✅ COMPLETE.** Doctrines are deferred. This pass added fog-aware HUD cleanup, selected-unit details, city renaming, broad-water movement with ship visuals, and conservative in-match unit promotions.
 
-**Next up: Phase 3e (Larger Maps + Camera/Minimap polish), then revisit Doctrines once the core readability pass feels good.**
+**Phase 3e (Larger Maps + Camera/Minimap): ✅ CORE COMPLETE.** Default procedural maps are now 80×80, camera pan/zoom is clamped to the playable map, mouse-edge scrolling is enabled, each hot-seat player keeps an independent camera position, and the HUD includes a fog-aware minimap with a viewport indicator.
+
+**Phase 4 (Single-Player AI): ✅ MVP COMPLETE.** Start screen now supports Human vs Human and Human vs AI, with Easy / Medium / Hard difficulty. Player 2 AI is deterministic, obeys its own fog of war, emits normal `Command` records, and uses production, movement, capture, defense, supply interdiction, roads/bridges, forts, and promotions via heuristic scoring.
+
+**Phase 4 cleanup / readability fixes: ✅ COMPLETE.** Road/bridge build previews now work through known/explored terrain rather than only current vision, clicked road targets resolve to the nearest valid engineering tile, road orders stop if another unit occupies the next segment, production is slower, cities support auto-build toggles, friendly units can pass through but no longer park on the same final tile, group move orders spread units around the requested target, and right-click orders show a path/destination preview.
+
+**Economy Growth / City Development: ✅ COMPLETE.** Real cities and capitals now upgrade from level 1→3, scaling income and supply capacity. Upgrade orders drain ECO over time like production, pause unit production while active, can be cancelled, and preserve completed development level on capture. The city menu now shows level, income/sec, player supply used/cap, this-city supply contribution, a single selected-unit auto-build toggle, and upgrade progress/cancel states.
+
+**Economy + AI playtest tuning: 🔶 FIRST PASS.** AI city-upgrade decisions are now supply-pressure aware, difficulty-sensitive, capped for concurrent upgrades, and blocked when a city is visibly threatened. The active-player HUD now shows income/sec and active city upgrades for faster economy readback during playtests.
+
+**Next up: continue economy/AI playtest tuning, then Phase 3e stress polish, promotion balance, and deferred Doctrines once the core readability pass feels good.**
 
 ### Repo layout (live at `~/Projects/war_game/`)
 
@@ -39,9 +49,10 @@ war_game/
                VisibilityState.cs,
                Unit.cs, City.cs, Player.cs, PlayerId.cs,
                UnitType.cs, UnitStats.cs, FortOrder.cs, RoadOrder.cs
-    Commands/  Command.cs (MoveUnit, BuildUnit, RenameCity,
-               BuildFort, RazeFort, BuildRoad, CancelRoad,
+    Commands/  Command.cs (MoveUnit, BuildUnit, SetAutoBuild, UpgradeCity,
+               CancelCityUpgrade, RenameCity, BuildFort, RazeFort, BuildRoad, CancelRoad,
                ChoosePromotion, NoOp)
+    AI/        AiBrain.cs, AiDifficulty.cs
     Systems/   Movement, Combat, Production, Healing,
                CityCapture, FortConstruction, Maintenance,
                PowerProjection, SupplyLines, RoadConstruction,
@@ -51,10 +62,12 @@ war_game/
     Generation/ IntegerNoise.cs, MapGenerator.cs, BalanceValidator.cs
     GameSim.cs                ← per-tick orchestrator
     StateSerializer.cs        ← canonical hash/replay serializer
-  Sim.Tests/                 ← xUnit, runs via `dotnet test`, 189 tests
+  Sim.Tests/                 ← xUnit, runs via `dotnet test`, 225 tests
     WarGame.Sim.Tests.csproj
   src/                       ← Godot scene scripts
-    Main.cs, Main.tscn        ← entry; switches to Game.tscn
+    Main.cs, Main.tscn        ← entry; switches to MatchSetup.tscn
+    MatchSetup.cs/.tscn       ← Human vs Human / Human vs AI setup
+    MatchConfig.cs            ← selected match mode + AI difficulty
     Game.cs, Game.tscn        ← game scene; tick loop + HUD + input wiring
     Render/   MapRenderer.cs, Theme.cs, TestMap.cs (now unused — Game.cs
               calls MapGenerator instead; TestMap kept for ad-hoc debugging)
@@ -66,13 +79,15 @@ war_game/
 
 ### Schema state
 
-`GameState.CurrentVersion = 11`. Schema history:
+`GameState.CurrentVersion = 13`. Schema history:
 - v1–v5: Phase 0–1 baseline
 - v7: City.CaptureHp (Advance Wars-style capture)
 - v8: PendingForts, Fort tile type, terrain defense, maintenance
 - v9: TileSupplyOwner, TileRoadSupplyOwner, UnitSupplyStatus, PendingRoads, Bridge tile type
 - v10: TileVisibility, LastSeenTileType, LastSeenTileOwner
 - v11: City.Name, Unit.XpRaw, Unit.Rank, Unit.PromotionPoints, Unit.PerkMask
+- v12: City.AutoBuildOrder
+- v13: City.DevelopmentLevel, City.DevelopmentProgress, City.DevelopmentOrder
 
 Determinism golden hash pinned in `Sim.Tests/DeterminismTests.cs`. Bump version + repin whenever the byte layout changes.
 
@@ -86,12 +101,12 @@ SupplyLines → Healing → Maintenance → FogOfWar → WinConditions
 
 ### What's actually playable today
 
-A hot-seat 1v1 RTS on a procedurally generated 60×60 map (`Sim/Generation/MapGenerator.cs`, runtime entry: `Game.cs` calls `MapGenerator.Generate(seed)`). Two players share keyboard/mouse; **Tab** swaps active seat. Real systems running:
+A 1v1 RTS on a procedurally generated 80×80 map (`Sim/Generation/MapGenerator.cs`, runtime entry: `Game.cs` calls `MapGenerator.Generate(seed)`). The start screen supports Human vs Human hot-seat and Human vs AI. In hot-seat, two players share keyboard/mouse and **Tab** swaps active seat; in AI mode, Player 1 is human, Player 2 is AI, Tab is disabled, and the player sees only Player 1 fog. Real systems running:
 
 - **Tile grid** — Plains, Forest, Mountain, MountainPeak, Water, River, Road, Bridge, City, Capital, Fort
 - **Two unit types** (Light, Heavy) with PLAN.md §3 stat baseline
 - **Deterministic A* pathfinding** with terrain costs
-- **Movement** — sub-tile interpolation, friendly pass-through, enemy blocking
+- **Movement** — sub-tile interpolation, friendly pass-through, enemy blocking, no friendly final-tile stacking; retargeting a moving unit preserves its current edge progress instead of snapping back to its anchor tile; group move orders spread units to the nearest valid unreserved tiles around the clicked target
 - **Water movement** — broad water is passable but slow (0.25×); rivers keep slow crossing behavior; units on broad water render as ship silhouettes and cannot capture or engineer roads/forts
 - **Combat** — adjacent engagement, two-pass simultaneous damage, **three stacking modifiers**:
   - Concentration-of-force (+15% per additional ally attacking same target)
@@ -102,17 +117,19 @@ A hot-seat 1v1 RTS on a procedurally generated 60×60 map (`Sim/Generation/MapGe
 - **Fortifications** — built via `F` key on Plains in owned territory; 50 ECO, 10 sec build; 55% damage reduction, base-25/radius-6 projection, +2 supply; CaptureHp 80; razeable via `R` key; max 3 per player; cancelled if territory lost during construction
 - **Supply lines** — owned cities/capitals/forts seed supply; friendly territory carries normal supply; roads/bridges carry road-assisted supply outside friendly territory; enemy units on roads/bridges interdict the road bonus/path
 - **Unit maintenance** — 0.02 ECO/tick per unsheltered unit; road-supplied units pay 50%; cut-off units pay 150%; units on friendly cities or forts exempt; no ECO = starvation damage
-- **City + capital production** (1 ECO/sec, 3 ECO/sec; build orders for Light/Heavy; cancel order; owned real cities/capitals can be renamed from the production menu)
+- **City + capital production and development** (city income level 1/2/3 = 1/2/3 ECO/sec; capital income level 1/2/3 = 3/4/5 ECO/sec; city supply level 1/2/3 = 5/8/12; Light 12 ECO, Heavy 36 ECO; build orders for Light/Heavy; cancel order; selected-unit auto-build toggle; upgrade city/capital; owned real cities/capitals can be renamed from the production menu)
 - **Healing** on friendly-controlled owned cities/forts only (0.5 HP/tick at 0.05 ECO/tick cost); road supply never enables healing
 - **Power projection** (additive linear-falloff; fort-aware: fort base=25, radius=6)
 - **Win conditions** (capture enemy capital OR hold ≥80% of cities for 30 consecutive seconds)
-- **Procedural maps** — `MapGenerator.Generate(seed)`: layered integer-noise elevation → rank-based land terrain assignment (plains/forest/foothill/mountain) → irregular major lowland basins + small inland lakes → mountain-water buffer enforcement → component-based tiny-water cleanup → saddle-point pass cutting through ridges → mountain-peak spine promotion along sufficiently large range interiors → one narrow river on 60×60 maps, starting in mountain country, meandering through lowlands, and flowing toward larger water bodies → city placement that keeps owned cities clustered near capitals, including valid mountain-edge city sites when needed → same-territory road networks only (no free road between enemy capitals), with generated bridges across one-tile waterways and costly edge-mountain roads → BFS-based connectivity guarantee with `PunchPath` last resort
+- **Procedural maps** — `MapGenerator.Generate(seed)`: layered integer-noise elevation → rank-based land terrain assignment (plains/forest/foothill/mountain) → irregular major lowland basins + small inland lakes → mountain-water buffer enforcement → component-based tiny-water cleanup → saddle-point pass cutting through ridges → mountain-peak spine promotion along sufficiently large range interiors → 1–2 narrow rivers depending on map size, starting in mountain country, meandering through lowlands, avoiding river clumps, and flowing toward larger water bodies → city placement that keeps owned cities clustered near capitals, including valid mountain-edge city sites when needed → same-territory road networks only (no free road between enemy capitals), with generated bridges across one-tile waterways and costly edge-mountain roads → BFS-based connectivity guarantee with `PunchPath` last resort
 - **Map balance scoring** — 4-axis `BalanceValidator` (path symmetry / terrain parity / choke points / connectivity), threshold ≥250/400, reject-and-retry up to 10 attempts with deterministic xorshift seed perturbation
-- **Road/bridge engineering** — selected unit + `B` enters road-build mode; hover previews the deterministic engineering path; click commits `BuildRoadCommand`; land segments cost 2 ECO/30 ticks; bridges over rivers or 1-tile-wide waterways cost 8 ECO/90 ticks; broad water, mountain peaks, and skinny land causeways between water are blocked
+- **Road/bridge engineering** — selected unit + `B` enters road-build mode; hover previews the deterministic engineering path through known/explored terrain; click commits `BuildRoadCommand` to the nearest valid engineering tile; land segments cost 2 ECO/30 ticks; bridges over rivers or 1-tile-wide waterways cost 8 ECO/90 ticks; broad water, mountain peaks, and skinny land causeways between water are blocked; if any unit occupies the next segment, the road order stops
 - **Fog of war** — each hot-seat player has separate Hidden / Explored / Visible tile state; friendly light units reveal radius 5, heavy units radius 4, and owned cities/capitals/forts radius 8; explored tiles show dim last-seen terrain/ownership/structures but no units; hidden tiles show no information
-- **Visual layer**: Teal/Coral palette, Inter fallback, terrain tones, drop shadows, borders, HP bars, rank stars, promotion glow, ship silhouettes on broad water, stack fanning, hostile-territory ring, supply status rings, victory banner, fort diamonds (amber), road/bridge previews, build progress bars, capture HP bars
+- **Camera + minimap** — WASD/arrow pan, mouse-edge scrolling, scroll-wheel zoom from 0.5× to 2.0×, per-player hot-seat camera memory, clamped map bounds, fog-aware minimap with visible/explored/hidden terrain and unit/city dots
+- **Single-player AI MVP** — deterministic Player 2 AI with Easy / Medium / Hard difficulty; obeys fog; emits standard commands only; handles production, promotions, visible combat reaction, neutral/enemy city capture, wounded retreats, fort construction, road/bridge engineering, and visible enemy road interdiction
+- **Visual layer**: Teal/Coral palette, Inter fallback, terrain tones, PNG terrain/city/fort/capital/road/bridge overlays, drop shadows, borders, HP bars, rank stars, promotion glow, ship silhouettes on broad water, stack fanning, hostile-territory ring, supply status rings, victory banner, road/bridge previews, move path/destination previews, build progress bars, capture HP bars
 
-Performance: **1.6 ms/tick avg** with 200 units on a 60×60 map. ~18× headroom under the 30 ms budget for 30 Hz sim.
+Performance: the sim performance test still passes with 200 units; larger 80×80 maps are now the runtime default. A dedicated 500+ unit render/sim stress pass remains a Phase 3e tuning task.
 
 ### Known design deviations from PLAN.md (intentional)
 
@@ -120,8 +137,8 @@ Performance: **1.6 ms/tick avg** with 200 units on a 60×60 map. ~18× headroom 
 - **Fortifications pulled forward from Phase 3c to Phase 1.5**: built early based on user request. PLAN.md originally slated forts for Phase 3c with a 30-sec build time; we used 10 sec and added capture/raze mechanics.
 - **No-stacking** (one unit per tile): added based on playtest feedback.
 - **Healing on friendly cities**: not in original PLAN.md; added based on playtest.
-- **Tile size 32 px / window 1600×900**: chosen to fit 30×20 grid with HUD. Phase 3 introduces camera pan/zoom.
-- **Unit stats**: Light 60 HP / 8 dps / 4 tiles/sec / supply 1 / 10 ECO; Heavy 150 HP / 20 dps / 1.5 tiles/sec / supply 2 / 30 ECO.
+- **Tile size 32 px / window 1600×900**: tiles remain 32 px at 1× zoom; camera zoom/pan now handles larger maps.
+- **Unit stats**: Light 60 HP / 8 dps / 4 tiles/sec / supply 1 / 12 ECO; Heavy 150 HP / 20 dps / 1.5 tiles/sec / supply 2 / 36 ECO.
 
 ### Controls reference
 
@@ -130,14 +147,20 @@ Performance: **1.6 ms/tick avg** with 200 units on a 60×60 map. ~18× headroom 
 | Left-click | Select unit / Open city production menu |
 | Drag-select | Box-select units |
 | Right-click | Issue move order |
+| Right-click with multiple units selected | Issue spread move order: one unit gets the clicked tile, others take nearest valid unreserved tiles |
+| WASD / Arrow keys | Pan camera |
+| Mouse at screen edge | Edge-scroll camera |
+| Mouse wheel | Zoom camera 0.5×–2.0× around cursor |
 | Q | Build Light (when city menu open) |
 | W | Build Heavy (when city menu open) |
+| Production menu Auto-build toggle | Toggle repeat production for the selected/queued unit type |
+| Production menu Upgrade | Upgrade owned real city/capital to the next development level |
 | Production menu `E` button | Edit owned city/capital name |
 | F | Build fort at tile under cursor |
 | R | Raze fort at tile under cursor |
 | B | Enter road/bridge build mode for selected unit; hover previews path, left-click commits |
 | P | Open promotion chooser for one selected unit with an unspent promotion point |
-| Tab | Switch active player (hot-seat) |
+| Tab | Switch active player (Human vs Human only) |
 | Esc | Clear selection / Close menu |
 | F11 | Toggle fullscreen |
 
@@ -154,7 +177,7 @@ Performance: **1.6 ms/tick avg** with 200 units on a 60×60 map. ~18× headroom 
 ```bash
 cd ~/Projects/war_game
 export PATH="$HOME/.dotnet:$PATH"   # .NET 8 SDK in user profile
-dotnet test Sim.Tests/              # confirm 189/189 still green
+dotnet test Sim.Tests/              # confirm 225/225 still green
 dotnet build WarGame.csproj         # confirm Godot project builds
 open project.godot                  # or run via Godot.app, F5 to play
 ```
@@ -167,10 +190,11 @@ To add a new sim system:
 
 ### Next session priorities (in order)
 
-1. **Phase 3e — Larger Maps + Camera/Minimap**: bump default to 80×80 (with 120×120 option), improve camera feel, add minimap, and verify 500+ units remain smooth.
-2. **Promotion tuning pass**: playtest XP pacing, rank thresholds, perk readability, and whether any perk is becoming a default pick.
-3. **Phase 3d — Doctrines (deferred)**: pre-match selection screen with Maneuver / Attrition / Combined Arms after the core UX and progression systems settle.
-4. **Fix `godot-export` CI** — drag a working version pin into `.github/workflows/build.yml`. Determinism CI is solid; binary builds just need a green action.
+1. **Continue economy + AI playtest/tuning**: verify the first-pass supply-pressure upgrade heuristic creates bigger armies without runaway snowballing, check that the AI upgrades at readable times, and tune Easy/Medium/Hard behavior around the new economy.
+2. **Phase 3e tuning / polish**: playtest camera feel on 80×80 maps, decide whether to add a 120×120 map option, and run a dedicated 500+ unit stress pass.
+3. **Promotion tuning pass**: playtest XP pacing, rank thresholds, perk readability, and whether any perk is becoming a default pick.
+4. **Phase 3d — Doctrines (deferred)**: doctrine selection now belongs in the existing match setup flow after AI/readability tuning settles.
+5. **Fix `godot-export` CI** — drag a working version pin into `.github/workflows/build.yml`. Determinism CI is solid; binary builds just need a green action.
 
 ### Phase 2 design notes (for posterity)
 
@@ -545,10 +569,10 @@ Each phase has a **goal**, **deliverables**, **acceptance criteria**, and **huma
 - Mountain peaks, broad water, and skinny land causeways between water are blocked; forests/mountains are allowed but costly
 - Bridges render as darker tan and move/supply like roads
 
-#### 3b. Fog of war (3–4 days)
+#### 3b. Fog of war — ✅ COMPLETE
 - Tile visibility based on friendly unit/city vision radius
 - Three states per tile per player: hidden / explored (last-seen) / visible
-- Renderer respects per-player visibility (critical for MP and replays)
+- Renderer and input respect per-player visibility (critical for MP and replays)
 
 **Human checkpoint:** does FoW feel right at this map size, or are maps too big/small?
 
@@ -567,10 +591,12 @@ Fortifications were implemented early based on user request. See Phase 1.5 notes
 - Three doctrines per spec above
 - Apply stat modifiers and unlock per-doctrine abilities
 
-#### 3e. Larger maps (2–3 days)
-- Bump map size to 120x120
-- Performance pass: ensure 500+ units, larger power projection grid still hit 60 FPS
-- Camera with zoom + pan (RTS-standard)
+#### 3e. Larger maps + camera/minimap — ✅ CORE COMPLETE
+- Default map size is now 80x80
+- Camera supports clamped WASD/arrow pan, edge-scroll, and 0.5x-2.0x zoom
+- Hot-seat camera position is remembered per player
+- Fog-aware minimap renders terrain, ownership tint, cities, units, and viewport bounds
+- Remaining tuning: decide whether to expose a 120x120 option and run a dedicated 500+ unit stress pass
 
 **Acceptance criteria for Phase 3:**
 - All five subsystems work in single-player sandbox
@@ -582,9 +608,11 @@ Fortifications were implemented early based on user request. See Phase 1.5 notes
 
 ---
 
-### Phase 4 — Single-Player AI (Target: 3–5 weeks)
+### Phase 4 — Single-Player AI — ✅ MVP COMPLETE
 
 **Goal:** AI good enough that beating it teaches you the game, and the hard difficulty challenges intermediate players.
+
+**Current MVP:** Player 2 can be AI-controlled from the start screen. The AI is deterministic, uses the same `Command` API as humans, obeys its own fog of war, and has Easy / Medium / Hard heuristic differences without APM cheating.
 
 **Architecture: layered AI**
 - **Strategic layer** (slow, every few seconds): sets goals — "expand to that region," "defend this city," "tech to combined arms"
@@ -592,20 +620,20 @@ Fortifications were implemented early based on user request. See Phase 1.5 notes
 - **Tactical layer** (fast, every tick): executes individual unit movements, reacts to threats
 
 **Deliverables:**
-- Three difficulty levels (Easy / Medium / Hard) — differ in strategic awareness, NOT input speed (no APM advantage; that's not strategic)
-- AI uses the same `Command` API as human players (no cheating)
-- Easy: random-ish but valid play, won't blunder *too* badly
-- Medium: solid economy, sensible expansion, basic threat response
-- Hard: actively counters player strategy, uses terrain, defends supply lines
+- ✅ Three difficulty levels (Easy / Medium / Hard) — differ in scoring/cadence/priority, NOT input speed
+- ✅ AI uses the same `Command` API as human players and no direct sim mutation
+- ✅ Fog-compliant command generation; build/engineering commands require visible targets
+- ✅ Full-toolbox heuristic coverage: production, scouting, capture, visible combat reaction, wounded retreats, promotions, fort construction, road/bridge building, and visible road interdiction
+- 🔶 Remaining: heavy playtest and scoring tune so Easy/Medium/Hard match the target win rates
 
 **Acceptance criteria:**
-- Easy AI: a brand-new player wins ~70% of matches
-- Medium AI: a player who's read the tutorial wins ~50% of matches
-- Hard AI: requires real strategic thinking to beat
-- AI completes its decisions in < 5ms per tick (no frame drops)
-- AI never desyncs (it's just generating Commands like a human)
+- 🔶 Easy AI: a brand-new player wins ~70% of matches
+- 🔶 Medium AI: a player who's read the tutorial wins ~50% of matches
+- 🔶 Hard AI: requires real strategic thinking to beat
+- ✅ AI command generation is bounded and tested through deterministic xUnit scenarios
+- ✅ AI never desyncs by design: it is only generating Commands like a human
 
-**Human checkpoint:** this is the slowest phase. **Budget extra time.** The AI doesn't have to be world-class; it has to teach the game. If Hard mode is too easy, ship anyway and improve post-launch.
+**Human checkpoint:** play Human vs AI on all three difficulties. Tune scoring before adding new AI features; the MVP already uses the full toolbox, so the next risk is noise/readability rather than missing capability.
 
 ---
 

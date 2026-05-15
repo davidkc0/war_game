@@ -43,6 +43,18 @@ public class RoadConstructionTests
     }
 
     [Fact]
+    public void EngineeringPath_AllowsBuildingCurrentTile()
+    {
+        MapState map = new MapState.Builder(1, 1)
+            .Set(0, 0, TileType.Forest)
+            .Build();
+
+        List<int> path = Pathfinding.FindRoadBuildPath(map, 0, 0, 0, 0);
+
+        Assert.Equal(new[] { 0 }, path);
+    }
+
+    [Fact]
     public void EngineeringPath_BlocksRoadAlongSkinnyLandCauseway()
     {
         var b = new MapState.Builder(5, 3);
@@ -116,6 +128,40 @@ public class RoadConstructionTests
         Assert.Equal(TileType.Road, s.Map.GetTileUnchecked(1, 0));
         Assert.Equal(1, s.Units[0].TileX);
         Assert.Empty(s.PendingRoads);
+    }
+
+    [Fact]
+    public void RoadConstruction_ConvertsCurrentTileToRoad()
+    {
+        var s = BuildRoadMap(TileType.Forest);
+        s.Players[(int)PlayerId.Player1].Eco = FP.FromInt(100);
+
+        s = GameSim.Step(s, new List<Command>
+        {
+            new BuildRoadCommand(0, 0, 0) { PlayerId = (int)PlayerId.Player1 }
+        });
+        s = GameSim.StepN(s, RoadConstruction.RoadBuildTicks);
+
+        Assert.Equal(TileType.Road, s.Map.GetTileUnchecked(0, 0));
+        Assert.Equal(0, s.Units[0].TileX);
+        Assert.Empty(s.PendingRoads);
+    }
+
+    [Fact]
+    public void RoadConstruction_CancelsWhenUnitOccupiesNextSegment()
+    {
+        var s = BuildRoadMap(TileType.Forest, width: 3);
+        s.Players[(int)PlayerId.Player1].Eco = FP.FromInt(100);
+        s.Cities.Add(City.Create(1, 2, 0, PlayerId.Player2, isCapital: true));
+        s.Units.Add(Unit.Create(1, PlayerId.Player2, UnitType.Light, 1, 0));
+
+        s = GameSim.Step(s, new List<Command>
+        {
+            new BuildRoadCommand(0, 2, 0) { PlayerId = (int)PlayerId.Player1 }
+        });
+
+        Assert.Empty(s.PendingRoads);
+        Assert.Equal(TileType.Forest, s.Map.GetTileUnchecked(1, 0));
     }
 
     [Fact]

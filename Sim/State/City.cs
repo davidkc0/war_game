@@ -7,10 +7,10 @@ namespace WarGame.Sim.State;
 // the building / depopulating it is out of v1 scope.
 //
 // EcoStockpile is the player-side accumulator: a city contributes
-// CityEcoPerTick to its owner's running total, and unit production debits
-// from that total. We track it on the City rather than on Player to make
-// supply-cut consequences easy to express in Phase 3a (a city cut off from
-// its owner could pause its contribution).
+// its development-based ECO rate to its owner's running total, and unit
+// production / city upgrades debit from that total. We track city economy
+// state here to make supply-cut consequences easy to express in Phase 3a
+// (a city cut off from its owner could pause its contribution).
 //
 // IsCapital is redundant with the underlying tile type, but storing it on
 // the City lets us iterate cities without a tile lookup in hot paths.
@@ -29,10 +29,15 @@ public struct City
                                      // condition: a capital captured by
                                      // the other player triggers victory.
     public bool IsCapital;
-    public int SupplyCapacity;       // 5 by default; doctrine bonuses in Phase 3
+    public int SupplyCapacity;       // Real cities scale by development; forts stay fixed.
     public FP ProductionProgress;    // ECO accumulated toward current order
     public byte ProductionOrder;     // (UnitType + 1), 0 = idle. (+1 lets us
                                      //  reserve 0 as the empty sentinel.)
+    public byte AutoBuildOrder;      // (UnitType + 1), 0 = off. Requeues when
+                                     //  the current build completes.
+    public byte DevelopmentLevel;    // Real cities/capitals: 1-3. Forts: 0.
+    public FP DevelopmentProgress;   // ECO accumulated toward current upgrade.
+    public byte DevelopmentOrder;    // Target level, 0 = no upgrade in progress.
     public string? Name;             // Optional player-authored city name.
 
     // Capture health. Starts at MaxCaptureHp; enemy units deplete it.
@@ -40,6 +45,7 @@ public struct City
     public int CaptureHp;
 
     public bool IsProducing => ProductionOrder != 0;
+    public bool IsUpgrading => DevelopmentOrder != 0;
     public string DefaultName => IsCapital ? "Capital" : $"City {Id + 1}";
     public string DisplayName => string.IsNullOrWhiteSpace(Name) ? DefaultName : Name!;
 
@@ -74,6 +80,10 @@ public struct City
             SupplyCapacity = UnitStats.CitySupplyCapacity,
             ProductionProgress = FP.Zero,
             ProductionOrder = 0,
+            AutoBuildOrder = 0,
+            DevelopmentLevel = UnitStats.CityDevelopmentMinLevel,
+            DevelopmentProgress = FP.Zero,
+            DevelopmentOrder = 0,
             Name = null,
             CaptureHp = isCapital ? CapitalMaxCaptureHp : CityMaxCaptureHp,
         };

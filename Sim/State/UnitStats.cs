@@ -21,7 +21,7 @@ public static class UnitStats
     public static readonly FP LightTilesPerTick  = FP.FromInt(4) / FP.FromInt(TicksPerSecond);   // 0.133 tiles / tick
     public const int LightSupplyCost = 1;
     public const int LightVisionRadius = 5;
-    public const int LightEcoCost = 10;
+    public const int LightEcoCost = 12;
 
     // ---- Heavy ------------------------------------------------------------
     public static readonly FP HeavyMaxHp        = FP.FromInt(150);
@@ -31,12 +31,16 @@ public static class UnitStats
     public static readonly FP HeavyTilesPerTick  = FP.One / FP.FromInt(20);
     public const int HeavySupplyCost = 2;
     public const int HeavyVisionRadius = 4;
-    public const int HeavyEcoCost = 30;
+    public const int HeavyEcoCost = 36;
 
     // ---- City / Capital production ---------------------------------------
     public static readonly FP CityEcoPerTick    = FP.One / FP.FromInt(TicksPerSecond);            // 1 / sec
     public static readonly FP CapitalEcoPerTick = FP.FromInt(3) / FP.FromInt(TicksPerSecond);     // 3 / sec
     public const int CitySupplyCapacity = 5;
+    public const byte CityDevelopmentMinLevel = 1;
+    public const byte CityDevelopmentMaxLevel = 3;
+    public const int CityLevel2UpgradeCost = 40;
+    public const int CityLevel3UpgradeCost = 90;
 
     // Out-of-supply units lose HP per tick. Tuned so a starved unit dies in
     // ~10s (light at 60 HP / 6 dmg/sec = 10s). Phase 3a playtests this.
@@ -84,4 +88,41 @@ public static class UnitStats
         UnitType.Heavy => HeavyVisionRadius,
         _ => 0,
     };
+
+    public static byte NormalizeDevelopmentLevel(byte level)
+    {
+        if (level < CityDevelopmentMinLevel) return CityDevelopmentMinLevel;
+        if (level > CityDevelopmentMaxLevel) return CityDevelopmentMaxLevel;
+        return level;
+    }
+
+    public static int UpgradeCost(byte currentLevel) => currentLevel switch
+    {
+        1 => CityLevel2UpgradeCost,
+        2 => CityLevel3UpgradeCost,
+        _ => 0,
+    };
+
+    public static int EcoPerSecond(in City city)
+    {
+        if (city.DevelopmentLevel == 0) return 0;
+        byte level = NormalizeDevelopmentLevel(city.DevelopmentLevel);
+        return city.IsCapital ? level + 2 : level;
+    }
+
+    public static FP EcoRate(in City city)
+        => FP.FromInt(EcoPerSecond(city)) / FP.FromInt(TicksPerSecond);
+
+    public static int SupplyCapacityForLevel(byte level) => NormalizeDevelopmentLevel(level) switch
+    {
+        1 => 5,
+        2 => 8,
+        3 => 12,
+        _ => CitySupplyCapacity,
+    };
+
+    public static int SupplyCapacity(in City city)
+        => city.DevelopmentLevel == 0
+            ? city.SupplyCapacity
+            : SupplyCapacityForLevel(city.DevelopmentLevel);
 }
